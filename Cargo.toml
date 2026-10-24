@@ -1,0 +1,25 @@
+[package]
+name = "tiny2lite4linux"
+version = "0.1.0"
+edition = "2024"
+description = "Control the OBSBOT Tiny 2 Lite webcam on Linux"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "t2l"
+path = "src/lib.rs"
+
+[[bin]]
+name = "t2l"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+nix = { version = "0.31", features = ["ioctl"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+hex = "0.4"
