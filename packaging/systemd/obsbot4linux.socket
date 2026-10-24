@@ -1,0 +1,9 @@
+[Unit]
+Description=OBSBot4Linux camera daemon socket
+
+[Socket]
+ListenStream=%t/obsbot4linux.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

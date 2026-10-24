@@ -1,0 +1,8 @@
+[Unit]
+Description=OBSBot4Linux camera daemon
+Requires=obsbot4linux.socket
+After=obsbot4linux.socket
+
+[Service]
+ExecStart=/usr/bin/obsbot4linux daemon
+Restart=on-failure
