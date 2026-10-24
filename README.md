@@ -38,5 +38,10 @@ mode) the daemon remembers.
 ## Status
 
 Local only, in planning. Builds on the Tiny 2 Lite support written for
-[Tiny4Linux](https://github.com/OpenFoxes/Tiny4Linux) (EUPL-1.2); the licence of
-this project is still to be decided.
+[Tiny4Linux](https://github.com/OpenFoxes/Tiny4Linux) (EUPL-1.2).
+
+## Licence
+
+GPL-3.0-or-later, see [LICENSE](LICENSE). Code taken over from Tiny4Linux is
+EUPL-1.2 and is distributed here under the GPL by the EUPL's compatibility clause
+(Article 5); files with such code say so in their header.
