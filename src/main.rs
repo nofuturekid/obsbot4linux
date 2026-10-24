@@ -3,6 +3,9 @@
 //! t2l command line interface.
 
 mod cli;
+mod client;
+mod daemon;
+mod proto;
 
 fn main() {
     std::process::exit(cli::run());

@@ -13,16 +13,19 @@ use t2l::presets::Pose;
 
 #[derive(Parser)]
 #[command(name = "t2l", version, about = "Control the OBSBOT Tiny 2 Lite")]
-struct Cli {
+pub struct Cli {
     /// Print machine-readable JSON (errors too, as {"ok":false,"error":...})
     #[arg(long, global = true)]
-    json: bool,
+    pub json: bool,
+    /// Do not use a running daemon; talk to the camera directly
+    #[arg(long, global = true)]
+    direct: bool,
     #[command(subcommand)]
-    command: Cmd,
+    pub command: Cmd,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum OnOff {
+pub enum OnOff {
     On,
     Off,
 }
@@ -34,7 +37,11 @@ impl OnOff {
 }
 
 #[derive(Subcommand)]
-enum Cmd {
+pub enum Cmd {
+    /// Run the daemon: owns the camera, serves the socket, broadcasts state changes
+    Daemon,
+    /// Stream state events as JSON lines and forward JSON requests from stdin (for widgets)
+    Watch,
     /// Show all settings (the camera's status block, tracking readback, zoom, image controls, remembered state)
     Status,
     /// Put the camera to sleep
@@ -104,7 +111,7 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
-enum Audio {
+pub enum Audio {
     /// Microphone noise reduction
     Noise { level: NoiseReduction },
     /// Automatic gain
@@ -118,7 +125,7 @@ enum Audio {
 }
 
 #[derive(Subcommand)]
-enum GestureCmd {
+pub enum GestureCmd {
     /// Switch one gesture on or off
     Set { gesture: Gesture, state: OnOff },
     /// Zoom ratio of the zoom gestures, 1.0-4.0
@@ -126,7 +133,7 @@ enum GestureCmd {
 }
 
 #[derive(Subcommand)]
-enum PresetCmd {
+pub enum PresetCmd {
     /// List the presets
     List,
     /// Save a pose to a slot; without --pan/--tilt/--zoom the current pose is used
@@ -160,10 +167,13 @@ fn value_name<T: serde::Serialize>(v: T) -> Value {
 
 /// Runs the command and returns (JSON result, text for humans). Setters answer with
 /// {"ok","command","value"}; `status` prints the status object itself.
-fn execute(cmd: Cmd) -> Result<(Value, String)> {
+pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
     // refuse before opening the camera
     if let Cmd::FactoryReset { yes: false } = cmd {
         return Err(Error::Invalid("factory reset deletes presets and settings; pass --yes".into()));
+    }
+    if matches!(cmd, Cmd::Daemon | Cmd::Watch) {
+        return Err(Error::Invalid("daemon and watch are not camera commands".into()));
     }
     let cam = Camera::open()?;
     // (command name, value) of a setter
@@ -176,6 +186,7 @@ fn execute(cmd: Cmd) -> Result<(Value, String)> {
         Ok((json!({"ok": true, "command": name, "value": value}), text))
     };
     match cmd {
+        Cmd::Daemon | Cmd::Watch => unreachable!("handled above"),
         Cmd::Status => {
             let full = value_name(cam.full_status()?);
             let text = flatten(&full);
@@ -283,21 +294,43 @@ fn flatten(v: &Value) -> String {
     out.join("\n")
 }
 
+pub fn print_ok(json: bool, result: &Value, text: &str) -> i32 {
+    // a closed pipe (`t2l status | head`) is not an error
+    let _ = writeln!(std::io::stdout(), "{}", if json { result.to_string() } else { text.to_string() });
+    0
+}
+
+pub fn print_error(json: bool, message: &str) -> i32 {
+    if json {
+        let _ = writeln!(std::io::stdout(), "{}", json!({"ok": false, "error": message}));
+    } else {
+        eprintln!("t2l: {message}");
+    }
+    1
+}
+
 pub fn run() -> i32 {
     let cli = Cli::parse();
+    match cli.command {
+        Cmd::Daemon => return report(cli.json, crate::daemon::run()),
+        Cmd::Watch => return report(cli.json, crate::client::watch()),
+        _ => {}
+    }
+    if !cli.direct {
+        let args = std::env::args().skip(1).filter(|a| a != "--direct").collect();
+        if let Some(code) = crate::client::forward(&cli, args) {
+            return code;
+        }
+    }
     match execute(cli.command) {
-        Ok((json, text)) => {
-            // a closed pipe (`t2l status | head`) is not an error
-            let _ = writeln!(std::io::stdout(), "{}", if cli.json { json.to_string() } else { text });
-            0
-        }
-        Err(e) => {
-            if cli.json {
-                let _ = writeln!(std::io::stdout(), "{}", json!({"ok": false, "error": e.to_string()}));
-            } else {
-                eprintln!("t2l: {e}");
-            }
-            1
-        }
+        Ok((json, text)) => print_ok(cli.json, &json, &text),
+        Err(e) => print_error(cli.json, &e.to_string()),
+    }
+}
+
+fn report(json: bool, result: Result<()>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(e) => print_error(json, &e.to_string()),
     }
 }

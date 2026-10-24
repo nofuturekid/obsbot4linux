@@ -12,6 +12,7 @@ use crate::state::State;
 use crate::status::{Status, Tracking};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -68,6 +69,8 @@ pub struct Zoom {
 
 #[derive(Debug, Serialize)]
 pub struct FullStatus {
+    /// Always true here; the daemon reports false when the camera is gone.
+    pub available: bool,
     pub status: Status,
     /// None when the camera did not answer query 0x0104.
     pub tracking: Option<Tracking>,
@@ -77,14 +80,21 @@ pub struct FullStatus {
     pub capabilities: Vec<&'static str>,
 }
 
+/// One sequence for the whole process, so frames from separate `Camera` handles (the daemon
+/// opens the device per operation) never repeat a number.
+fn sequence() -> &'static Sequence {
+    static SEQ: OnceLock<Sequence> = OnceLock::new();
+    SEQ.get_or_init(Sequence::new)
+}
+
 pub struct Camera {
     dev: Device,
-    seq: Sequence,
+    seq: &'static Sequence,
 }
 
 impl Camera {
     pub fn open() -> Result<Self> {
-        Ok(Self { dev: Device::open()?, seq: Sequence::new() })
+        Ok(Self { dev: Device::open()?, seq: sequence() })
     }
 
     fn short(&self, payload: &[u8]) -> Result<()> {
@@ -157,6 +167,7 @@ impl Camera {
         let factor = self.zoom_factor().ok();
         let absolute = self.dev.get_ctrl(ZOOM_ABSOLUTE).ok();
         Ok(FullStatus {
+            available: true,
             status,
             tracking,
             zoom: Zoom { factor, absolute },

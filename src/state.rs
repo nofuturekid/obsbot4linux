@@ -8,7 +8,18 @@ use crate::commands::ExposureMode;
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs};
+
+/// The daemon keeps the state in memory (it is the only writer); `save` still writes the file.
+static CACHING: AtomicBool = AtomicBool::new(false);
+static CACHE: Mutex<Option<State>> = Mutex::new(None);
+
+/// Turns on the in-memory copy; call once in a process that is the only writer.
+pub fn enable_cache() {
+    CACHING.store(true, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Gimbal {
@@ -35,13 +46,27 @@ pub fn path() -> PathBuf {
 }
 
 impl State {
-    /// Loads the file; a missing or unreadable file is an empty state.
+    /// Loads the state (memory copy if enabled, else the file); a missing or unreadable
+    /// file is an empty state.
     pub fn load() -> Self {
-        fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let caching = CACHING.load(Ordering::Relaxed);
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if caching && let Some(state) = cache.as_ref() {
+            return state.clone();
+        }
+        let state: State =
+            fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        if caching {
+            *cache = Some(state.clone());
+        }
+        state
     }
 
     /// Writes the file atomically (temporary file, then rename).
     pub fn save(&self) -> Result<()> {
+        if CACHING.load(Ordering::Relaxed) {
+            *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.clone());
+        }
         let path = path();
         let dir = path.parent().ok_or_else(|| Error::Invalid("bad state path".into()))?;
         fs::create_dir_all(dir)?;
