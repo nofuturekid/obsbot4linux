@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `t2l daemon`: owns the camera. One worker thread does all camera access (so frames from
+//! `obsbot4linux daemon`: owns the camera. One worker thread does all camera access (so frames from
 //! every client are serialised and sequence numbers stay unique), executes requests with the
 //! CLI's own argument parser and polls the camera to notice changes it makes itself.
 
 use crate::cli::{Cli, Cmd, execute};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
+use obsbot4linux::camera::{CAPABILITIES, Camera};
+use obsbot4linux::error::{Error, Result};
+use obsbot4linux::state::{self, State};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::os::fd::FromRawFd;
@@ -15,9 +18,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
-use t2l::camera::{CAPABILITIES, Camera};
-use t2l::error::{Error, Result};
-use t2l::state::{self, State};
 
 const TICK: Duration = Duration::from_secs(1);
 /// The 0x0104 / zoom queries and the image controls are read at least this often.
@@ -30,8 +30,10 @@ struct Job {
 
 /// Parses and runs a request with the CLI code, like a direct call would.
 fn run_request(args: &[String]) -> std::result::Result<(Value, String), String> {
-    let cli = Cli::try_parse_from(std::iter::once("t2l".to_string()).chain(args.iter().cloned()))
-        .map_err(|e| e.to_string())?;
+    let cli = Cli::try_parse_from(
+        std::iter::once("obsbot4linux".to_string()).chain(args.iter().cloned()),
+    )
+    .map_err(|e| e.to_string())?;
     if matches!(cli.command, Cmd::Daemon | Cmd::Watch) {
         return Err("daemon and watch cannot be run through the daemon".into());
     }
@@ -243,8 +245,9 @@ fn bind() -> Result<UnixListener> {
     if let Some(l) = inherited_listener() {
         return Ok(l);
     }
-    let path = socket_path()
-        .ok_or_else(|| Error::Invalid("neither XDG_RUNTIME_DIR nor T2L_SOCKET is set".into()))?;
+    let path = socket_path().ok_or_else(|| {
+        Error::Invalid("neither XDG_RUNTIME_DIR nor OBSBOT4LINUX_SOCKET is set".into())
+    })?;
     if UnixStream::connect(&path).is_ok() {
         return Err(Error::Invalid(format!(
             "a daemon is already listening on {}",

@@ -2,7 +2,7 @@
 
 //! State file for values the camera does not report: the last gimbal pose sent and the
 //! exposure mode. The CLI updates it whenever it sets them, so separate calls stay
-//! consistent. Location: `$XDG_STATE_HOME/t2l/state.json` (default `~/.local/state`).
+//! consistent. Location: `$XDG_STATE_HOME/obsbot4linux/state.json` (default `~/.local/state`).
 
 use crate::commands::ExposureMode;
 use crate::error::{Error, Result};
@@ -55,7 +55,7 @@ pub fn path() -> PathBuf {
         .filter(|p| p.is_absolute())
         .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("t2l/state.json")
+    base.join("obsbot4linux/state.json")
 }
 
 impl State {

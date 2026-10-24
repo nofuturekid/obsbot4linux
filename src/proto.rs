@@ -15,13 +15,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// `T2L_SOCKET`, else `$XDG_RUNTIME_DIR/t2l.sock`. There is no fallback to a shared
+/// `OBSBOT4LINUX_SOCKET`, else `$XDG_RUNTIME_DIR/obsbot4linux.sock`. There is no fallback to a shared
 /// directory such as /tmp: another local user could create the socket first.
 pub fn socket_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("T2L_SOCKET") {
+    if let Some(p) = std::env::var_os("OBSBOT4LINUX_SOCKET") {
         return Some(p.into());
     }
-    std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("t2l.sock"))
+    std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("obsbot4linux.sock"))
 }
 
 #[derive(Debug, Deserialize, PartialEq)]

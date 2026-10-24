@@ -22,7 +22,7 @@ const REPLY_ATTEMPTS: usize = 20;
 /// camera applies neither.
 const PAIR_GAP: Duration = Duration::from_millis(100);
 
-/// Commands t2l supports, for the `capabilities` list of `status --json`.
+/// Commands obsbot4linux supports, for the `capabilities` list of `status --json`.
 pub const CAPABILITIES: &[&str] = &[
     "sleep",
     "wake",
@@ -94,7 +94,7 @@ pub struct Zoom {
     pub absolute: Option<i32>,
 }
 
-/// Degrees in t2l's angles: pan positive = camera left, tilt positive = up.
+/// Degrees in obsbot4linux's angles: pan positive = camera left, tilt positive = up.
 #[derive(Debug, Serialize)]
 pub struct LivePose {
     pub pan: f64,
@@ -320,7 +320,7 @@ impl Camera {
         self.pair(cmd::zone_tracking(on, self.seq.next(), self.seq.next()))
     }
 
-    /// Zone area in t2l's angles (pan positive = left, tilt positive = up), converted to the
+    /// Zone area in obsbot4linux's angles (pan positive = left, tilt positive = up), converted to the
     /// camera's (pitch positive = down).
     pub fn set_zone_area(&self, pan: (f32, f32), tilt: (f32, f32)) -> Result<()> {
         let seqs = [0; 4].map(|_| self.seq.next());

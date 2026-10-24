@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Live check of the readback fields: sets every value of a setting, reads it back through
-# `t2l status` and compares. One line per check; exits 1 if any check FAILs.
+# `obsbot4linux status` and compares. One line per check; exits 1 if any check FAILs.
 # Wakes the camera first and restores all values (and sleep) at the end.
-# Needs a connected Tiny 2 Lite, jq, and a built t2l (T2L=/path/to/t2l to override).
+# Needs a connected Tiny 2 Lite, jq, and a built obsbot4linux (OBSBOT4LINUX=/path/to/obsbot4linux to override).
 set -u
-T=${T2L:-"$(dirname "$0")/../target/debug/t2l"}
+T=${OBSBOT4LINUX:-"$(dirname "$0")/../target/debug/obsbot4linux"}
 t() { "$T" --direct --json "$@"; }
 st() { t status; }
 fails=0
@@ -23,7 +23,7 @@ chk() {
 		fails=$((fails + 1))
 	fi
 }
-# try FIELD VALUE EXPECTED-JSON JQ-PATH T2L-ARGS...: set, wait, check
+# try FIELD VALUE EXPECTED-JSON JQ-PATH ARGS...: set, wait, check
 try() {
 	local f=$1 v=$2 e=$3 p=$4
 	shift 4

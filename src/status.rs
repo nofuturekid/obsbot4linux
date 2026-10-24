@@ -43,7 +43,7 @@ pub struct Status {
     pub hdr: bool,
     pub auto_sleep_enabled: bool,
     pub auto_sleep_seconds: u16,
-    /// Own image (3) is not settable from t2l; reported as None.
+    /// Own image (3) is not settable from obsbot4linux; reported as None.
     pub sleep_background: Option<SleepBackground>,
     pub sleep_background_mirror: bool,
     /// Status byte 0x11; `custom` (3) once the zoom was set to a factor other than a preset.

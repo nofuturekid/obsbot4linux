@@ -5,14 +5,18 @@
 use std::io::Write;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use obsbot4linux::camera::Camera;
+use obsbot4linux::commands::*;
+use obsbot4linux::error::{Error, Result};
+use obsbot4linux::presets::Pose;
 use serde_json::{Value, json};
-use t2l::camera::Camera;
-use t2l::commands::*;
-use t2l::error::{Error, Result};
-use t2l::presets::Pose;
 
 #[derive(Parser)]
-#[command(name = "t2l", version, about = "Control the OBSBOT Tiny 2 Lite")]
+#[command(
+    name = "obsbot4linux",
+    version,
+    about = "Control the OBSBOT Tiny 2 Lite"
+)]
 pub struct Cli {
     /// Print machine-readable JSON (errors too, as {"ok":false,"error":...})
     #[arg(long, global = true)]
@@ -210,7 +214,7 @@ pub enum PresetCmd {
     /// List the presets
     List,
     /// Save a pose to a slot; without --pan/--tilt/--zoom the current pose is used
-    /// (the last gimbal pose t2l sent, else the one V4L2 last set; live zoom)
+    /// (the last gimbal pose obsbot4linux sent, else the one V4L2 last set; live zoom)
     Save {
         slot: u8,
         #[arg(long)]
@@ -497,7 +501,7 @@ fn flatten(v: &Value) -> String {
 }
 
 pub fn print_ok(json: bool, result: &Value, text: &str) -> i32 {
-    // a closed pipe (`t2l status | head`) is not an error
+    // a closed pipe (`obsbot4linux status | head`) is not an error
     let _ = writeln!(
         std::io::stdout(),
         "{}",
@@ -518,7 +522,7 @@ pub fn print_error(json: bool, message: &str) -> i32 {
             json!({"ok": false, "error": message})
         );
     } else {
-        eprintln!("t2l: {message}");
+        eprintln!("obsbot4linux: {message}");
     }
     1
 }

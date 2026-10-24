@@ -36,7 +36,7 @@ setting!(SleepBackground { Black = 0, Image = 1 });
 setting!(HandSide { Right = 0, Left = 1 });
 setting!(
     /// Automatic exposure mode. The camera reports it only as status byte 0x07 (face);
-    /// t2l also remembers the last one set. Manual exposure is not mapped yet.
+    /// obsbot4linux also remembers the last one set. Manual exposure goes over UVC.
     ExposureMode { Global = 0, Face = 1 }
 );
 

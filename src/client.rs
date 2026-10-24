@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Client side of the socket: forwarding CLI commands to a running daemon, and `t2l watch`.
+//! Client side of the socket: forwarding CLI commands to a running daemon, and `obsbot4linux watch`.
 
 use crate::cli::Cli;
 use crate::proto::{Response, socket_path};
+use obsbot4linux::error::{Error, Result};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use t2l::error::{Error, Result};
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -46,8 +46,9 @@ pub fn forward(cli: &Cli, args: Vec<String>) -> Option<i32> {
 }
 
 fn connect_or_start() -> Result<UnixStream> {
-    let path = socket_path()
-        .ok_or_else(|| Error::Invalid("neither XDG_RUNTIME_DIR nor T2L_SOCKET is set".into()))?;
+    let path = socket_path().ok_or_else(|| {
+        Error::Invalid("neither XDG_RUNTIME_DIR nor OBSBOT4LINUX_SOCKET is set".into())
+    })?;
     if let Ok(s) = UnixStream::connect(&path) {
         return Ok(s);
     }
@@ -72,7 +73,7 @@ fn connect_or_start() -> Result<UnixStream> {
     }
 }
 
-/// `t2l watch`: the daemon's lines (state events and answers) go to stdout, JSON request
+/// `obsbot4linux watch`: the daemon's lines (state events and answers) go to stdout, JSON request
 /// lines from stdin go to the daemon. Ends when stdin closes.
 pub fn watch() -> Result<()> {
     let stream = connect_or_start()?;

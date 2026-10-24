@@ -7,11 +7,11 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [lib]
-name = "t2l"
+name = "obsbot4linux"
 path = "src/lib.rs"
 
 [[bin]]
-name = "t2l"
+name = "obsbot4linux"
 path = "src/main.rs"
 
 [dependencies]
