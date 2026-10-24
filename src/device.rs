@@ -94,10 +94,11 @@ impl Device {
         let by_id = fs::read_dir("/dev/v4l/by-id").into_iter().flatten().flatten();
         for entry in by_id {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.contains("OBSBOT_Tiny_2_Lite") && name.ends_with("-video-index0") {
-                if let Ok(file) = File::open(entry.path()) {
-                    return Ok(Self(file));
-                }
+            if name.contains("OBSBOT_Tiny_2_Lite")
+                && name.ends_with("-video-index0")
+                && let Ok(file) = File::open(entry.path())
+            {
+                return Ok(Self(file));
             }
         }
 
