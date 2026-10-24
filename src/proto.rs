@@ -80,11 +80,17 @@ impl Hub {
     }
 
     pub fn remove(&self, id: u64) {
-        self.clients.lock().unwrap_or_else(|e| e.into_inner()).retain(|(i, _)| *i != id);
+        self.clients
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(i, _)| *i != id);
     }
 
     pub fn respond(writer: &Writer, response: &Response) -> io::Result<()> {
-        write_line(writer, &serde_json::to_value(response).unwrap_or(Value::Null))
+        write_line(
+            writer,
+            &serde_json::to_value(response).unwrap_or(Value::Null),
+        )
     }
 
     pub fn broadcast(&self, state: &Value) {
@@ -103,13 +109,40 @@ mod tests {
     #[test]
     fn request_and_response_serialise_as_documented() {
         let r: Request = serde_json::from_str(r#"{"id":1,"args":["fov","wide"]}"#).unwrap();
-        assert_eq!(r, Request { id: json!(1), args: vec!["fov".into(), "wide".into()] });
+        assert_eq!(
+            r,
+            Request {
+                id: json!(1),
+                args: vec!["fov".into(), "wide".into()]
+            }
+        );
 
-        let ok = Response { id: json!(1), ok: true, result: Some(json!({"a": 1})), text: None, error: None };
-        assert_eq!(serde_json::to_value(&ok).unwrap(), json!({"id": 1, "ok": true, "result": {"a": 1}}));
-        let err = Response { id: json!("x"), ok: false, result: None, text: None, error: Some("boom".into()) };
-        assert_eq!(serde_json::to_value(&err).unwrap(), json!({"id": "x", "ok": false, "error": "boom"}));
-        assert_eq!(state_event(&json!({"available": true})), json!({"event": "state", "state": {"available": true}}));
+        let ok = Response {
+            id: json!(1),
+            ok: true,
+            result: Some(json!({"a": 1})),
+            text: None,
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            json!({"id": 1, "ok": true, "result": {"a": 1}})
+        );
+        let err = Response {
+            id: json!("x"),
+            ok: false,
+            result: None,
+            text: None,
+            error: Some("boom".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            json!({"id": "x", "ok": false, "error": "boom"})
+        );
+        assert_eq!(
+            state_event(&json!({"available": true})),
+            json!({"event": "state", "state": {"available": true}})
+        );
     }
 
     fn read_line(s: UnixStream) -> Value {
@@ -132,7 +165,11 @@ mod tests {
 
         let (c_srv, c) = UnixStream::pair().unwrap();
         hub.add(c_srv).unwrap();
-        assert_eq!(read_line(c), state_event(&json!({"led": 2})), "late client starts from the last state");
+        assert_eq!(
+            read_line(c),
+            state_event(&json!({"led": 2})),
+            "late client starts from the last state"
+        );
     }
 
     #[test]

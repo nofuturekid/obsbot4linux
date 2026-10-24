@@ -52,7 +52,9 @@ pub fn check_slot(slot: u8) -> Result<()> {
 fn pose_frame(command: u16, slot: u8, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     check_slot(slot)?;
     if !(pose.pan.is_finite() && pose.tilt.is_finite() && pose.zoom >= 1.0) {
-        return Err(Error::Invalid("preset pose needs finite pan/tilt and zoom >= 1".into()));
+        return Err(Error::Invalid(
+            "preset pose needs finite pan/tilt and zoom >= 1".into(),
+        ));
     }
     let mut data = (slot as u32).to_le_bytes().to_vec();
     // pan, pitch (down positive), 0, zoom, -1000 as OBSBOT Center sends it
@@ -73,8 +75,13 @@ pub fn update(slot: u8, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
 /// Rename: plain ASCII, no terminator.
 pub fn rename(slot: u8, name: &str, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     check_slot(slot)?;
-    if name.is_empty() || name.len() > MAX_NAME || !name.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
-        return Err(Error::Invalid(format!("preset name must be 1-{MAX_NAME} printable ASCII characters")));
+    if name.is_empty()
+        || name.len() > MAX_NAME
+        || !name.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+    {
+        return Err(Error::Invalid(format!(
+            "preset name must be 1-{MAX_NAME} printable ASCII characters"
+        )));
     }
     let mut data = (slot as u32).to_le_bytes().to_vec();
     data.extend_from_slice(name.as_bytes());
@@ -104,7 +111,13 @@ pub fn recall(slot: u8, seq: u16) -> Result<[u8; FRAME_SIZE]> {
 /// Occupied slots from a selector-0x0c read: count, then the slot indices.
 pub fn parse_slots(block: &[u8]) -> Vec<u8> {
     let count = block.first().copied().unwrap_or(0) as usize;
-    block.iter().skip(1).take(count.min(SLOTS as usize)).copied().filter(|s| *s < SLOTS).collect()
+    block
+        .iter()
+        .skip(1)
+        .take(count.min(SLOTS as usize))
+        .copied()
+        .filter(|s| *s < SLOTS)
+        .collect()
 }
 
 /// One selector-0x0d read: status, slot, pad, pitch i16, yaw i16, zoom u16 (hundredths),
@@ -167,12 +180,20 @@ mod tests {
     // captured tilt -0.1 is user tilt +0.1.
     #[test]
     fn create_and_update_match_capture() {
-        let pose = Pose { pan: 0.8, tilt: 0.1, zoom: 1.0 };
+        let pose = Pose {
+            pan: 0.8,
+            tilt: 0.1,
+            zoom: 1.0,
+        };
         assert_captured(
             create(0, pose, 265).unwrap(),
             "aa2509010c00d6c90a04443918009af500000000cdcc4c3fcdccccbd000000000000803f00007ac4",
         );
-        let pose = Pose { pan: f32::from_bits(0x3f666667), tilt: 0.2, zoom: 1.0 };
+        let pose = Pose {
+            pan: f32::from_bits(0x3f666667),
+            tilt: 0.2,
+            zoom: 1.0,
+        };
         assert_captured(
             update(0, pose, 270).unwrap(),
             "aa250e010c0017110a04043e18000fb4000000006766663fcdcc4cbe000000000000803f00007ac4",
@@ -185,25 +206,41 @@ mod tests {
             rename(0, "Voreingestellt1", 266).unwrap(),
             "aa250a010c0036c70a04843a1300645300000000566f7265696e67657374656c6c7431",
         );
-        assert_captured(rename(0, "eins", 267).unwrap(), "aa250b010c0067020a04843a0800d9770000000065696e73");
+        assert_captured(
+            rename(0, "eins", 267).unwrap(),
+            "aa250b010c0067020a04843a0800d9770000000065696e73",
+        );
     }
 
     #[test]
     fn delete_matches_capture() {
         let [d, c] = delete(1, 362, 363).unwrap();
         assert_captured(d, "aa256a010c0075780a0484390400bffb01000000");
-        assert_captured(c, "aa256b010c00257e0a04843d2c002a5f00000000feffffffffffffff80ffffffffffffff00000000ffffffff00ffffffffffffffff00000000000000");
+        assert_captured(
+            c,
+            "aa256b010c00257e0a04843d2c002a5f00000000feffffffffffffff80ffffffffffffff00000000ffffffff00ffffffffffffffff00000000000000",
+        );
     }
 
     #[test]
     fn recall_matches_capture() {
-        assert_captured(recall(0, 0x20).unwrap(), "aa2520000c006bdc0a04c4391400d6fb000000000000803f0000803f0000803f0000803f");
-        assert_captured(recall(2, 0x26).unwrap(), "aa2526000c008bc30a04c4391400af19020000000000803f0000803f0000803f0000803f");
+        assert_captured(
+            recall(0, 0x20).unwrap(),
+            "aa2520000c006bdc0a04c4391400d6fb000000000000803f0000803f0000803f0000803f",
+        );
+        assert_captured(
+            recall(2, 0x26).unwrap(),
+            "aa2526000c008bc30a04c4391400af19020000000000803f0000803f0000803f0000803f",
+        );
     }
 
     #[test]
     fn invalid_input_is_rejected() {
-        let pose = Pose { pan: 0.0, tilt: 0.0, zoom: 1.0 };
+        let pose = Pose {
+            pan: 0.0,
+            tilt: 0.0,
+            zoom: 1.0,
+        };
         assert!(create(3, pose, 0).is_err());
         assert!(recall(3, 0).is_err());
         assert!(delete(3, 0, 1).is_err());
@@ -221,7 +258,14 @@ mod tests {
         let p = parse_entry(&block).unwrap();
         assert_eq!(p.slot, 0);
         assert_eq!(p.name, "t4ltest");
-        assert_eq!(p.pose, Pose { pan: 12.5, tilt: 3.25, zoom: 1.5 });
+        assert_eq!(
+            p.pose,
+            Pose {
+                pan: 12.5,
+                tilt: 3.25,
+                zoom: 1.5
+            }
+        );
         block[0] = 0x02;
         assert_eq!(parse_entry(&block), None, "end of list");
     }

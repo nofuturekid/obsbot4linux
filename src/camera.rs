@@ -24,9 +24,28 @@ const PAIR_GAP: Duration = Duration::from_millis(100);
 
 /// Commands t2l supports, for the `capabilities` list of `status --json`.
 pub const CAPABILITIES: &[&str] = &[
-    "sleep", "wake", "tracking", "speed", "hdr", "exposure", "zoom", "gimbal", "fov", "led", "mirror",
-    "invert", "auto_sleep", "sleep_background", "sleep_background_mirror", "audio", "gesture", "hand",
-    "zone", "image", "preset", "factory_reset",
+    "sleep",
+    "wake",
+    "tracking",
+    "speed",
+    "hdr",
+    "exposure",
+    "zoom",
+    "gimbal",
+    "fov",
+    "led",
+    "mirror",
+    "invert",
+    "auto_sleep",
+    "sleep_background",
+    "sleep_background_mirror",
+    "audio",
+    "gesture",
+    "hand",
+    "zone",
+    "image",
+    "preset",
+    "factory_reset",
 ];
 
 /// UVC controls for the picture, by CLI name (V4L2 control ids).
@@ -94,7 +113,10 @@ pub struct Camera {
 
 impl Camera {
     pub fn open() -> Result<Self> {
-        Ok(Self { dev: Device::open()?, seq: sequence() })
+        Ok(Self {
+            dev: Device::open()?,
+            seq: sequence(),
+        })
     }
 
     fn short(&self, payload: &[u8]) -> Result<()> {
@@ -143,7 +165,10 @@ impl Camera {
     /// Query 0x6804: current zoom factor.
     pub fn zoom_factor(&self) -> Result<f32> {
         let d = self.query(0x6804)?;
-        let bytes: [u8; 4] = d.get(..4).and_then(|s| s.try_into().ok()).ok_or(Error::NoAnswer(0x6804))?;
+        let bytes: [u8; 4] = d
+            .get(..4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(Error::NoAnswer(0x6804))?;
         Ok(f32::from_le_bytes(bytes))
     }
 
@@ -151,7 +176,13 @@ impl Camera {
         let mut map = BTreeMap::new();
         for (name, id) in IMAGE_CONTROLS {
             if let Some(range) = self.dev.ctrl_range(*id)? {
-                map.insert(name.to_string(), ImageControl { value: self.dev.get_ctrl(*id)?, range });
+                map.insert(
+                    name.to_string(),
+                    ImageControl {
+                        value: self.dev.get_ctrl(*id)?,
+                        range,
+                    },
+                );
             }
         }
         Ok(map)
@@ -186,7 +217,11 @@ impl Camera {
         self.short(&cmd::ai_mode(mode))?;
         if mode != AiMode::Static {
             // tracking moves the gimbal, so the remembered pose is no longer true
-            State { gimbal: None, ..State::load() }.save()?;
+            State {
+                gimbal: None,
+                ..State::load()
+            }
+            .save()?;
         }
         Ok(())
     }
@@ -199,7 +234,8 @@ impl Camera {
     pub fn set_auto_sleep(&self, seconds: Option<u16>) -> Result<()> {
         // off = the current time negated, as OBSBOT Center does
         let secs = match seconds {
-            Some(s) => i16::try_from(s).map_err(|_| Error::Invalid("auto-sleep time is at most 32767 s".into()))?,
+            Some(s) => i16::try_from(s)
+                .map_err(|_| Error::Invalid("auto-sleep time is at most 32767 s".into()))?,
             None => -(self.status()?.auto_sleep_seconds as i16),
         };
         self.short(&cmd::auto_sleep(secs))
@@ -255,7 +291,11 @@ impl Camera {
     pub fn set_exposure_mode(&self, mode: ExposureMode) -> Result<()> {
         self.framed(&cmd::exposure_mode_type(self.seq.next()))?;
         self.short(&cmd::exposure_mode_select(mode))?;
-        State { exposure_mode: Some(mode), ..State::load() }.save()
+        State {
+            exposure_mode: Some(mode),
+            ..State::load()
+        }
+        .save()
     }
 
     pub fn factory_reset(&self) -> Result<()> {
@@ -281,7 +321,10 @@ impl Camera {
         if !(1.0..=MAX_ZOOM).contains(&factor) {
             return Err(Error::Invalid("zoom factor is 1.0-4.0".into()));
         }
-        let r = self.dev.ctrl_range(ZOOM_ABSOLUTE)?.ok_or_else(|| Error::Unsupported("no zoom control".into()))?;
+        let r = self
+            .dev
+            .ctrl_range(ZOOM_ABSOLUTE)?
+            .ok_or_else(|| Error::Unsupported("no zoom control".into()))?;
         let share = (factor - 1.0) / (MAX_ZOOM - 1.0);
         let value = r.min + (share * (r.max - r.min) as f32).round() as i32;
         self.dev.set_ctrl(ZOOM_ABSOLUTE, value)
@@ -299,7 +342,10 @@ impl Camera {
 
     pub fn set_image(&self, name: &str, value: i32) -> Result<()> {
         let id = Self::image_id(name)?;
-        let r = self.dev.ctrl_range(id)?.ok_or_else(|| Error::Unsupported(format!("camera has no '{name}' control")))?;
+        let r = self
+            .dev
+            .ctrl_range(id)?
+            .ok_or_else(|| Error::Unsupported(format!("camera has no '{name}' control")))?;
         if value < r.min || value > r.max {
             return Err(Error::Invalid(format!("{name} is {}-{}", r.min, r.max)));
         }
@@ -333,19 +379,36 @@ impl Camera {
     fn current_pose(&self) -> Result<Pose> {
         let state = State::load().gimbal;
         let v4l2 = |id| self.dev.get_ctrl(id).map(|v| v as f32 / 3600.0);
-        let pan = match state.and_then(|g| g.pan) { Some(p) => p, None => v4l2(PAN_ABSOLUTE)? };
-        let tilt = match state.and_then(|g| g.tilt) { Some(t) => t, None => v4l2(TILT_ABSOLUTE)? };
-        Ok(Pose { pan, tilt, zoom: self.zoom_factor()? })
+        let pan = match state.and_then(|g| g.pan) {
+            Some(p) => p,
+            None => v4l2(PAN_ABSOLUTE)?,
+        };
+        let tilt = match state.and_then(|g| g.tilt) {
+            Some(t) => t,
+            None => v4l2(TILT_ABSOLUTE)?,
+        };
+        Ok(Pose {
+            pan,
+            tilt,
+            zoom: self.zoom_factor()?,
+        })
     }
 
     /// Saves a preset: creates it, or updates the pose of an existing one. New presets get
     /// "Preset <n>" as name unless one is given. `pose` overrides the current pose.
     pub fn save_preset(&self, slot: u8, name: Option<&str>, pose: Option<Pose>) -> Result<Pose> {
         presets::check_slot(slot)?;
-        let pose = match pose { Some(p) => p, None => self.current_pose()? };
+        let pose = match pose {
+            Some(p) => p,
+            None => self.current_pose()?,
+        };
         let exists = self.presets()?.iter().any(|p| p.slot == slot);
         let seq = self.seq.next();
-        self.framed(&if exists { presets::update(slot, pose, seq)? } else { presets::create(slot, pose, seq)? })?;
+        self.framed(&if exists {
+            presets::update(slot, pose, seq)?
+        } else {
+            presets::create(slot, pose, seq)?
+        })?;
         let default = format!("Preset {}", slot + 1);
         if let Some(name) = name.or((!exists).then_some(default.as_str())) {
             sleep(PAIR_GAP);
@@ -368,10 +431,17 @@ impl Camera {
         let static_mode = self.status()?.ai_mode == Some(AiMode::Static);
         let preset = self.presets()?.into_iter().find(|p| p.slot == slot);
         match preset {
-            Some(p) if static_mode => State { gimbal: None, ..State::load() }
-                .with_gimbal(Some(p.pose.pan), Some(p.pose.tilt))
-                .save(),
-            _ => State { gimbal: None, ..State::load() }.save(),
+            Some(p) if static_mode => State {
+                gimbal: None,
+                ..State::load()
+            }
+            .with_gimbal(Some(p.pose.pan), Some(p.pose.tilt))
+            .save(),
+            _ => State {
+                gimbal: None,
+                ..State::load()
+            }
+            .save(),
         }
     }
 }

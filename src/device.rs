@@ -84,14 +84,24 @@ pub struct Device(File);
 fn card_name(file: &File) -> Option<(String, u32)> {
     let mut cap = V4l2Capability::default();
     unsafe { vidioc_querycap(file.as_raw_fd(), &mut cap) }.ok()?;
-    let end = cap.card.iter().position(|b| *b == 0).unwrap_or(cap.card.len());
-    Some((String::from_utf8_lossy(&cap.card[..end]).into_owned(), cap.device_caps))
+    let end = cap
+        .card
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(cap.card.len());
+    Some((
+        String::from_utf8_lossy(&cap.card[..end]).into_owned(),
+        cap.device_caps,
+    ))
 }
 
 impl Device {
     /// Finds the Tiny 2 Lite: by-id symlink first, V4L2 card name as fallback.
     pub fn open() -> Result<Self> {
-        let by_id = fs::read_dir("/dev/v4l/by-id").into_iter().flatten().flatten();
+        let by_id = fs::read_dir("/dev/v4l/by-id")
+            .into_iter()
+            .flatten()
+            .flatten();
         for entry in by_id {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.contains("OBSBOT_Tiny_2_Lite")
@@ -145,7 +155,9 @@ impl Device {
     pub fn xu_get(&self, selector: u8) -> Result<[u8; XU_SIZE]> {
         let len = self.xu_len(selector)?;
         if len > XU_SIZE {
-            return Err(Error::Unsupported(format!("selector {selector:#x} is {len} bytes")));
+            return Err(Error::Unsupported(format!(
+                "selector {selector:#x} is {len} bytes"
+            )));
         }
         let mut data = [0u8; XU_SIZE];
         self.xu(selector, UVC_GET_CUR, &mut data)?;
@@ -159,7 +171,9 @@ impl Device {
         }
         let len = self.xu_len(selector)?;
         if XU_SIZE > len {
-            return Err(Error::Unsupported(format!("selector {selector:#x} is {len} bytes")));
+            return Err(Error::Unsupported(format!(
+                "selector {selector:#x} is {len} bytes"
+            )));
         }
         let mut data = [0u8; XU_SIZE];
         data[..payload.len()].copy_from_slice(payload);
@@ -180,7 +194,10 @@ impl Device {
 
     /// Range of a control, or None when the camera does not have it (or it is disabled).
     pub fn ctrl_range(&self, id: u32) -> Result<Option<CtrlRange>> {
-        let mut q = V4l2QueryCtrl { id, ..Default::default() };
+        let mut q = V4l2QueryCtrl {
+            id,
+            ..Default::default()
+        };
         match unsafe { vidioc_queryctrl(self.0.as_raw_fd(), &mut q) } {
             Ok(_) if q.flags & V4L2_CTRL_FLAG_DISABLED == 0 => Ok(Some(CtrlRange {
                 min: q.minimum,

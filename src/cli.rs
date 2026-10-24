@@ -170,10 +170,14 @@ fn value_name<T: serde::Serialize>(v: T) -> Value {
 pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
     // refuse before opening the camera
     if let Cmd::FactoryReset { yes: false } = cmd {
-        return Err(Error::Invalid("factory reset deletes presets and settings; pass --yes".into()));
+        return Err(Error::Invalid(
+            "factory reset deletes presets and settings; pass --yes".into(),
+        ));
     }
     if matches!(cmd, Cmd::Daemon | Cmd::Watch) {
-        return Err(Error::Invalid("daemon and watch are not camera commands".into()));
+        return Err(Error::Invalid(
+            "daemon and watch are not camera commands".into(),
+        ));
     }
     let cam = Camera::open()?;
     // (command name, value) of a setter
@@ -194,56 +198,93 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
         }
         Cmd::Sleep => cam.sleep(true).and_then(|_| done("sleep", Value::Null)),
         Cmd::Wake => cam.sleep(false).and_then(|_| done("wake", Value::Null)),
-        Cmd::Tracking { mode } => cam.set_ai_mode(mode).and_then(|_| done("tracking", value_name(mode))),
-        Cmd::Speed { speed } => cam.set_tracking_speed(speed).and_then(|_| done("speed", value_name(speed))),
-        Cmd::Hdr { state } => cam.set_hdr(state.get()).and_then(|_| done("hdr", json!(onoff(state.get())))),
-        Cmd::Exposure { mode } => cam.set_exposure_mode(mode).and_then(|_| done("exposure", value_name(mode))),
-        Cmd::Zoom { factor } => cam.set_zoom(factor).and_then(|_| done("zoom", json!(factor))),
-        Cmd::Gimbal { pan, tilt } => {
-            cam.gimbal(pan, tilt).and_then(|_| done("gimbal", json!({"pan": pan, "tilt": tilt})))
-        }
-        Cmd::Fov { fov } => cam.set_field_of_view(fov).and_then(|_| done("fov", value_name(fov))),
-        Cmd::Led { brightness } => cam.set_led(brightness).and_then(|_| done("led", json!(brightness))),
-        Cmd::Mirror { state } => cam.set_mirror(state.get()).and_then(|_| done("mirror", json!(onoff(state.get())))),
-        Cmd::Invert { state } => cam.set_invert(state.get()).and_then(|_| done("invert", json!(onoff(state.get())))),
+        Cmd::Tracking { mode } => cam
+            .set_ai_mode(mode)
+            .and_then(|_| done("tracking", value_name(mode))),
+        Cmd::Speed { speed } => cam
+            .set_tracking_speed(speed)
+            .and_then(|_| done("speed", value_name(speed))),
+        Cmd::Hdr { state } => cam
+            .set_hdr(state.get())
+            .and_then(|_| done("hdr", json!(onoff(state.get())))),
+        Cmd::Exposure { mode } => cam
+            .set_exposure_mode(mode)
+            .and_then(|_| done("exposure", value_name(mode))),
+        Cmd::Zoom { factor } => cam
+            .set_zoom(factor)
+            .and_then(|_| done("zoom", json!(factor))),
+        Cmd::Gimbal { pan, tilt } => cam
+            .gimbal(pan, tilt)
+            .and_then(|_| done("gimbal", json!({"pan": pan, "tilt": tilt}))),
+        Cmd::Fov { fov } => cam
+            .set_field_of_view(fov)
+            .and_then(|_| done("fov", value_name(fov))),
+        Cmd::Led { brightness } => cam
+            .set_led(brightness)
+            .and_then(|_| done("led", json!(brightness))),
+        Cmd::Mirror { state } => cam
+            .set_mirror(state.get())
+            .and_then(|_| done("mirror", json!(onoff(state.get())))),
+        Cmd::Invert { state } => cam
+            .set_invert(state.get())
+            .and_then(|_| done("invert", json!(onoff(state.get())))),
         Cmd::AutoSleep { time } => {
             let seconds = if time == "off" {
                 None
             } else {
-                Some(time.parse::<u16>().map_err(|_| Error::Invalid("auto-sleep is \"off\" or seconds".into()))?)
+                Some(
+                    time.parse::<u16>()
+                        .map_err(|_| Error::Invalid("auto-sleep is \"off\" or seconds".into()))?,
+                )
             };
-            cam.set_auto_sleep(seconds).and_then(|_| done("auto_sleep", json!(seconds)))
+            cam.set_auto_sleep(seconds)
+                .and_then(|_| done("auto_sleep", json!(seconds)))
         }
-        Cmd::SleepBackground { background } => {
-            cam.set_sleep_background(background).and_then(|_| done("sleep_background", value_name(background)))
-        }
+        Cmd::SleepBackground { background } => cam
+            .set_sleep_background(background)
+            .and_then(|_| done("sleep_background", value_name(background))),
         Cmd::SleepBackgroundMirror { state } => cam
             .set_sleep_background_mirror(state.get())
             .and_then(|_| done("sleep_background_mirror", json!(onoff(state.get())))),
         Cmd::Audio(a) => match a {
-            Audio::Noise { level } => cam.set_noise_reduction(level).and_then(|_| done("audio_noise", value_name(level))),
-            Audio::Gain { state } => cam.set_auto_gain(state.get()).and_then(|_| done("audio_gain", json!(onoff(state.get())))),
-            Audio::Distance { distance } => {
-                cam.set_pickup_distance(distance).and_then(|_| done("audio_distance", value_name(distance)))
-            }
-            Audio::SleepMic { state } => {
-                cam.set_mic_in_sleep(state.get()).and_then(|_| done("audio_sleep_mic", json!(onoff(state.get()))))
-            }
-            Audio::Mic { state } => cam.set_microphone(state.get()).and_then(|_| done("audio_mic", json!(onoff(state.get())))),
+            Audio::Noise { level } => cam
+                .set_noise_reduction(level)
+                .and_then(|_| done("audio_noise", value_name(level))),
+            Audio::Gain { state } => cam
+                .set_auto_gain(state.get())
+                .and_then(|_| done("audio_gain", json!(onoff(state.get())))),
+            Audio::Distance { distance } => cam
+                .set_pickup_distance(distance)
+                .and_then(|_| done("audio_distance", value_name(distance))),
+            Audio::SleepMic { state } => cam
+                .set_mic_in_sleep(state.get())
+                .and_then(|_| done("audio_sleep_mic", json!(onoff(state.get())))),
+            Audio::Mic { state } => cam
+                .set_microphone(state.get())
+                .and_then(|_| done("audio_mic", json!(onoff(state.get())))),
         },
         Cmd::Gesture(g) => match g {
-            GestureCmd::Set { gesture, state } => cam
-                .set_gesture(gesture, state.get())
-                .and_then(|_| done("gesture", json!({"gesture": gesture, "state": onoff(state.get())}))),
-            GestureCmd::ZoomRatio { ratio } => {
-                cam.set_gesture_zoom_ratio(ratio).and_then(|_| done("gesture_zoom_ratio", json!(ratio)))
+            GestureCmd::Set { gesture, state } => {
+                cam.set_gesture(gesture, state.get()).and_then(|_| {
+                    done(
+                        "gesture",
+                        json!({"gesture": gesture, "state": onoff(state.get())}),
+                    )
+                })
             }
+            GestureCmd::ZoomRatio { ratio } => cam
+                .set_gesture_zoom_ratio(ratio)
+                .and_then(|_| done("gesture_zoom_ratio", json!(ratio))),
         },
-        Cmd::Hand { side } => cam.set_hand_side(side).and_then(|_| done("hand", value_name(side))),
-        Cmd::Zone { state } => cam.set_zone_tracking(state.get()).and_then(|_| done("zone", json!(onoff(state.get())))),
-        Cmd::Image { control, value } => {
-            cam.set_image(&control, value).and_then(|_| done("image", json!({"control": control, "value": value})))
-        }
+        Cmd::Hand { side } => cam
+            .set_hand_side(side)
+            .and_then(|_| done("hand", value_name(side))),
+        Cmd::Zone { state } => cam
+            .set_zone_tracking(state.get())
+            .and_then(|_| done("zone", json!(onoff(state.get())))),
+        Cmd::Image { control, value } => cam
+            .set_image(&control, value)
+            .and_then(|_| done("image", json!({"control": control, "value": value}))),
         Cmd::Preset(p) => match p {
             PresetCmd::List => {
                 let list = cam.presets()?;
@@ -252,25 +293,46 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
                 } else {
                     list.iter()
                         .map(|p| {
-                            format!("slot {}: {:?}  pan {:.2}  tilt {:.2}  zoom {:.2}", p.slot, p.name, p.pose.pan, p.pose.tilt, p.pose.zoom)
+                            format!(
+                                "slot {}: {:?}  pan {:.2}  tilt {:.2}  zoom {:.2}",
+                                p.slot, p.name, p.pose.pan, p.pose.tilt, p.pose.zoom
+                            )
                         })
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
-                Ok((json!({"ok": true, "command": "preset_list", "value": list}), text))
+                Ok((
+                    json!({"ok": true, "command": "preset_list", "value": list}),
+                    text,
+                ))
             }
-            PresetCmd::Save { slot, name, pan, tilt, zoom } => {
-                let pose = pan.zip(tilt).zip(zoom).map(|((pan, tilt), zoom)| Pose { pan, tilt, zoom });
+            PresetCmd::Save {
+                slot,
+                name,
+                pan,
+                tilt,
+                zoom,
+            } => {
+                let pose =
+                    pan.zip(tilt)
+                        .zip(zoom)
+                        .map(|((pan, tilt), zoom)| Pose { pan, tilt, zoom });
                 let saved = cam.save_preset(slot, name.as_deref(), pose)?;
                 done("preset_save", json!({"slot": slot, "pose": saved}))
             }
-            PresetCmd::Rename { slot, name } => {
-                cam.rename_preset(slot, &name).and_then(|_| done("preset_rename", json!({"slot": slot, "name": name})))
-            }
-            PresetCmd::Delete { slot } => cam.delete_preset(slot).and_then(|_| done("preset_delete", json!({"slot": slot}))),
-            PresetCmd::Recall { slot } => cam.recall_preset(slot).and_then(|_| done("preset_recall", json!({"slot": slot}))),
+            PresetCmd::Rename { slot, name } => cam
+                .rename_preset(slot, &name)
+                .and_then(|_| done("preset_rename", json!({"slot": slot, "name": name}))),
+            PresetCmd::Delete { slot } => cam
+                .delete_preset(slot)
+                .and_then(|_| done("preset_delete", json!({"slot": slot}))),
+            PresetCmd::Recall { slot } => cam
+                .recall_preset(slot)
+                .and_then(|_| done("preset_recall", json!({"slot": slot}))),
         },
-        Cmd::FactoryReset { .. } => cam.factory_reset().and_then(|_| done("factory_reset", Value::Null)),
+        Cmd::FactoryReset { .. } => cam
+            .factory_reset()
+            .and_then(|_| done("factory_reset", Value::Null)),
     }
 }
 
@@ -279,11 +341,22 @@ fn flatten(v: &Value) -> String {
     fn walk(prefix: &str, v: &Value, out: &mut Vec<String>) {
         match v {
             Value::Object(m) => m.iter().for_each(|(k, v)| {
-                walk(&if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") }, v, out)
+                walk(
+                    &if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{prefix}.{k}")
+                    },
+                    v,
+                    out,
+                )
             }),
             Value::Array(a) if a.iter().all(Value::is_string) => out.push(format!(
                 "{prefix}: {}",
-                a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
             Value::String(s) => out.push(format!("{prefix}: {s}")),
             v => out.push(format!("{prefix}: {v}")),
@@ -296,13 +369,25 @@ fn flatten(v: &Value) -> String {
 
 pub fn print_ok(json: bool, result: &Value, text: &str) -> i32 {
     // a closed pipe (`t2l status | head`) is not an error
-    let _ = writeln!(std::io::stdout(), "{}", if json { result.to_string() } else { text.to_string() });
+    let _ = writeln!(
+        std::io::stdout(),
+        "{}",
+        if json {
+            result.to_string()
+        } else {
+            text.to_string()
+        }
+    );
     0
 }
 
 pub fn print_error(json: bool, message: &str) -> i32 {
     if json {
-        let _ = writeln!(std::io::stdout(), "{}", json!({"ok": false, "error": message}));
+        let _ = writeln!(
+            std::io::stdout(),
+            "{}",
+            json!({"ok": false, "error": message})
+        );
     } else {
         eprintln!("t2l: {message}");
     }
@@ -317,7 +402,10 @@ pub fn run() -> i32 {
         _ => {}
     }
     if !cli.direct {
-        let args = std::env::args().skip(1).filter(|a| a != "--direct").collect();
+        let args = std::env::args()
+            .skip(1)
+            .filter(|a| a != "--direct")
+            .collect();
         if let Some(code) = crate::client::forward(&cli, args) {
             return code;
         }

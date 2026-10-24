@@ -12,8 +12,8 @@ use std::io::{BufRead, BufReader};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 use t2l::camera::{CAPABILITIES, Camera};
 use t2l::error::{Error, Result};
@@ -130,7 +130,11 @@ impl Worker {
         self.publish_full(true);
         let mut next_tick = Instant::now() + TICK;
         loop {
-            let wait = if self.dirty { Duration::ZERO } else { next_tick.saturating_duration_since(Instant::now()) };
+            let wait = if self.dirty {
+                Duration::ZERO
+            } else {
+                next_tick.saturating_duration_since(Instant::now())
+            };
             match jobs.recv_timeout(wait) {
                 Ok(job) => {
                     let is_status = job.args.first().map(String::as_str) == Some("status");
@@ -153,25 +157,54 @@ impl Worker {
 }
 
 fn serve_client(stream: UnixStream, hub: Arc<Hub>, jobs: Sender<Job>) {
-    let Ok(reader) = stream.try_clone() else { return };
-    let Ok((id, writer)) = hub.add(stream) else { return };
+    let Ok(reader) = stream.try_clone() else {
+        return;
+    };
+    let Ok((id, writer)) = hub.add(stream) else {
+        return;
+    };
     for line in BufReader::new(reader).lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
-            Err(e) => Response { id: Value::Null, ok: false, result: None, text: None, error: Some(format!("bad request: {e}")) },
+            Err(e) => Response {
+                id: Value::Null,
+                ok: false,
+                result: None,
+                text: None,
+                error: Some(format!("bad request: {e}")),
+            },
             Ok(req) => {
                 let (tx, rx) = mpsc::channel();
-                let outcome = if jobs.send(Job { args: req.args, reply: tx }).is_ok() {
-                    rx.recv().unwrap_or_else(|_| Err("daemon is shutting down".into()))
+                let outcome = if jobs
+                    .send(Job {
+                        args: req.args,
+                        reply: tx,
+                    })
+                    .is_ok()
+                {
+                    rx.recv()
+                        .unwrap_or_else(|_| Err("daemon is shutting down".into()))
                 } else {
                     Err("daemon is shutting down".into())
                 };
                 match outcome {
-                    Ok((result, text)) => Response { id: req.id, ok: true, result: Some(result), text: Some(text), error: None },
-                    Err(error) => Response { id: req.id, ok: false, result: None, text: None, error: Some(error) },
+                    Ok((result, text)) => Response {
+                        id: req.id,
+                        ok: true,
+                        result: Some(result),
+                        text: Some(text),
+                        error: None,
+                    },
+                    Err(error) => Response {
+                        id: req.id,
+                        ok: false,
+                        result: None,
+                        text: None,
+                        error: Some(error),
+                    },
                 }
             }
         };
@@ -196,7 +229,10 @@ fn bind() -> Result<UnixListener> {
     let path = socket_path()
         .ok_or_else(|| Error::Invalid("neither XDG_RUNTIME_DIR nor T2L_SOCKET is set".into()))?;
     if UnixStream::connect(&path).is_ok() {
-        return Err(Error::Invalid(format!("a daemon is already listening on {}", path.display())));
+        return Err(Error::Invalid(format!(
+            "a daemon is already listening on {}",
+            path.display()
+        )));
     }
     let _ = std::fs::remove_file(&path); // stale socket of a dead daemon
     let listener = UnixListener::bind(&path)?;
@@ -209,7 +245,13 @@ pub fn run() -> Result<()> {
     let listener = bind()?;
     let hub = Arc::new(Hub::default());
     let (tx, rx) = mpsc::channel();
-    let worker = Worker { hub: hub.clone(), last: None, last_full: Instant::now(), dirty: false, up: None };
+    let worker = Worker {
+        hub: hub.clone(),
+        last: None,
+        last_full: Instant::now(),
+        dirty: false,
+        up: None,
+    };
     std::thread::spawn(move || worker.run(rx));
     for stream in listener.incoming().flatten() {
         let (hub, tx) = (hub.clone(), tx.clone());

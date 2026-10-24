@@ -54,8 +54,10 @@ impl State {
         if caching && let Some(state) = cache.as_ref() {
             return state.clone();
         }
-        let state: State =
-            fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let state: State = fs::read(path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         if caching {
             *cache = Some(state.clone());
         }
@@ -68,18 +70,29 @@ impl State {
             *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.clone());
         }
         let path = path();
-        let dir = path.parent().ok_or_else(|| Error::Invalid("bad state path".into()))?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| Error::Invalid("bad state path".into()))?;
         fs::create_dir_all(dir)?;
         let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(|e| Error::Invalid(e.to_string()))?)?;
+        fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(self).map_err(|e| Error::Invalid(e.to_string()))?,
+        )?;
         fs::rename(tmp, path)?;
         Ok(())
     }
 
     /// Merges a gimbal move: an axis that was not moved keeps its remembered value.
     pub fn with_gimbal(mut self, pan: Option<f32>, tilt: Option<f32>) -> Self {
-        let old = self.gimbal.unwrap_or(Gimbal { pan: None, tilt: None });
-        self.gimbal = Some(Gimbal { pan: pan.or(old.pan), tilt: tilt.or(old.tilt) });
+        let old = self.gimbal.unwrap_or(Gimbal {
+            pan: None,
+            tilt: None,
+        });
+        self.gimbal = Some(Gimbal {
+            pan: pan.or(old.pan),
+            tilt: tilt.or(old.tilt),
+        });
         self
     }
 }
@@ -90,13 +103,24 @@ mod tests {
 
     #[test]
     fn a_move_of_one_axis_keeps_the_other() {
-        let s = State::default().with_gimbal(Some(10.0), Some(5.0)).with_gimbal(None, Some(-3.0));
-        assert_eq!(s.gimbal, Some(Gimbal { pan: Some(10.0), tilt: Some(-3.0) }));
+        let s = State::default()
+            .with_gimbal(Some(10.0), Some(5.0))
+            .with_gimbal(None, Some(-3.0));
+        assert_eq!(
+            s.gimbal,
+            Some(Gimbal {
+                pan: Some(10.0),
+                tilt: Some(-3.0)
+            })
+        );
     }
 
     #[test]
     fn json_round_trip() {
-        let s = State { gimbal: None, exposure_mode: Some(ExposureMode::Face) };
+        let s = State {
+            gimbal: None,
+            exposure_mode: Some(ExposureMode::Face),
+        };
         let back: State = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
         assert_eq!(s, back);
     }

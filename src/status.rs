@@ -100,7 +100,11 @@ impl Tracking {
         };
         Some(Self {
             ai_mode,
-            hand_side: if d[2] == 1 { HandSide::Left } else { HandSide::Right },
+            hand_side: if d[2] == 1 {
+                HandSide::Left
+            } else {
+                HandSide::Right
+            },
             target_lock: d[3] != 0,
             zoom_gesture: d[4] != 0,
             dynamic_zoom: d[5] != 0,
@@ -130,7 +134,14 @@ mod tests {
     fn lite_offsets() {
         // LED at 0x21 and speed at 0x24 (tiny4linux 2.2.1 read the speed from 0x21),
         // auto-sleep negative = off with the time kept, pickup distance in the low bits.
-        let b = block(&[(0x21, 3), (0x24, 2), (0x0a, 0x88), (0x0b, 0xff), (0x22, 0x12), (0x02, 1)]);
+        let b = block(&[
+            (0x21, 3),
+            (0x24, 2),
+            (0x0a, 0x88),
+            (0x0b, 0xff),
+            (0x22, 0x12),
+            (0x02, 1),
+        ]);
         let s = Status::decode(&b);
         assert_eq!(s.led, 3);
         assert_eq!(s.tracking_speed, TrackingSpeed::Sport);

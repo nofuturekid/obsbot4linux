@@ -203,7 +203,9 @@ pub fn exposure_mode_type(seq: u16) -> [u8; FRAME_SIZE] {
 /// the camera to its left, pitch positive tilts it down; None keeps that axis.
 pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     const KEEP: f32 = -1000.0;
-    if yaw.is_none() && pitch.is_none() || [yaw, pitch].into_iter().flatten().any(|v| !v.is_finite()) {
+    if yaw.is_none() && pitch.is_none()
+        || [yaw, pitch].into_iter().flatten().any(|v| !v.is_finite())
+    {
         return Err(invalid("gimbal pose needs a finite pan and/or tilt"));
     }
     let mut data = Vec::with_capacity(12);
@@ -227,17 +229,38 @@ mod tests {
 
     #[test]
     fn sleep_and_wake_match_capture() {
-        assert_captured(sleep(false, 0xa5), "aa25a5000c005fef0a02c2a00400be0700000000");
-        assert_captured(sleep(true, 0x42), "aa2542000c00ea630a02c2a00400bffb01000000");
+        assert_captured(
+            sleep(false, 0xa5),
+            "aa25a5000c005fef0a02c2a00400be0700000000",
+        );
+        assert_captured(
+            sleep(true, 0x42),
+            "aa2542000c00ea630a02c2a00400bffb01000000",
+        );
     }
 
     #[test]
     fn gestures_match_capture() {
-        assert_captured(gesture(Gesture::TargetLock, true, 0x4d), "aa254d000c00399e0a04c430010027ff01");
-        assert_captured(gesture(Gesture::TargetLock, false, 0x23), "aa2523000c005bd50a04c4300100e63f00");
-        assert_captured(gesture(Gesture::Zoom, true, 0x4c), "aa254c000c00c85b0a044431010027ff01");
-        assert_captured(gesture(Gesture::DynamicZoom, false, 0x48), "aa2548000c00084f0a0444330100e63f00");
-        assert_captured(gesture(Gesture::DirectionChange, true, 0x49), "aa2549000c00384a0a04c433010027ff01");
+        assert_captured(
+            gesture(Gesture::TargetLock, true, 0x4d),
+            "aa254d000c00399e0a04c430010027ff01",
+        );
+        assert_captured(
+            gesture(Gesture::TargetLock, false, 0x23),
+            "aa2523000c005bd50a04c4300100e63f00",
+        );
+        assert_captured(
+            gesture(Gesture::Zoom, true, 0x4c),
+            "aa254c000c00c85b0a044431010027ff01",
+        );
+        assert_captured(
+            gesture(Gesture::DynamicZoom, false, 0x48),
+            "aa2548000c00084f0a0444330100e63f00",
+        );
+        assert_captured(
+            gesture(Gesture::DirectionChange, true, 0x49),
+            "aa2549000c00384a0a04c433010027ff01",
+        );
     }
 
     #[test]
@@ -251,10 +274,22 @@ mod tests {
 
     #[test]
     fn tracking_speed_hand_and_invert_match_capture() {
-        assert_captured(tracking_speed(TrackingSpeed::Standard, 0x20), "aa2520000c00abcb0a04c40c0100e63f00");
-        assert_captured(tracking_speed(TrackingSpeed::Sport, 0x21), "aa2521000c00fa0e0a04c40c010067fe02");
-        assert_captured(hand_side(HandSide::Left, 0x0186), "aa2586010c00a11a0a044422010027ff01");
-        assert_captured(hand_side(HandSide::Right, 0x0187), "aa2587010c00f0df0a0444220100e63f00");
+        assert_captured(
+            tracking_speed(TrackingSpeed::Standard, 0x20),
+            "aa2520000c00abcb0a04c40c0100e63f00",
+        );
+        assert_captured(
+            tracking_speed(TrackingSpeed::Sport, 0x21),
+            "aa2521000c00fa0e0a04c40c010067fe02",
+        );
+        assert_captured(
+            hand_side(HandSide::Left, 0x0186),
+            "aa2586010c00a11a0a044422010027ff01",
+        );
+        assert_captured(
+            hand_side(HandSide::Right, 0x0187),
+            "aa2587010c00f0df0a0444220100e63f00",
+        );
         assert_captured(invert(true, 0x5b), "aa255b000c00a8130a04843b010027ff01");
         assert_captured(invert(false, 0x5c), "aa255c000c0019c90a04843b0100e63f00");
     }
@@ -271,8 +306,14 @@ mod tests {
 
     #[test]
     fn exposure_type_and_factory_reset_match_capture() {
-        assert_captured(exposure_mode_type(0x15), "aa2515000c00a89e0a0282290500f9270132000000");
-        assert_eq!(exposure_mode_select(ExposureMode::Global), [0x03, 0x01, 0x00]);
+        assert_captured(
+            exposure_mode_type(0x15),
+            "aa2515000c00a89e0a0282290500f9270132000000",
+        );
+        assert_eq!(
+            exposure_mode_select(ExposureMode::Global),
+            [0x03, 0x01, 0x00]
+        );
         assert_eq!(exposure_mode_select(ExposureMode::Face), [0x03, 0x01, 0x01]);
         assert_captured(factory_reset(0x0b), "aa250b000c00695e0a0202a8010027ff01");
     }

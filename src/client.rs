@@ -25,9 +25,13 @@ pub fn forward(cli: &Cli, args: Vec<String>) -> Option<i32> {
         return finish("lost the connection to the daemon".into());
     }
     for line in BufReader::new(stream).lines() {
-        let Ok(line) = line else { return finish("the daemon did not answer".into()) };
+        let Ok(line) = line else {
+            return finish("the daemon did not answer".into());
+        };
         // events and other clients' lines are not ours
-        let Ok(resp) = serde_json::from_str::<Response>(&line) else { continue };
+        let Ok(resp) = serde_json::from_str::<Response>(&line) else {
+            continue;
+        };
         if resp.id != json!(1) {
             continue;
         }

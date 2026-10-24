@@ -18,7 +18,11 @@ pub fn crc16_usb(data: &[u8]) -> u16 {
     for byte in data {
         crc ^= *byte as u16;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xa001 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xa001
+            } else {
+                crc >> 1
+            };
         }
     }
     crc ^ 0xffff
@@ -42,7 +46,10 @@ fn header(kind: u8, receiver: u8, command: u16, sequence: u16) -> [u8; FRAME_SIZ
 /// # Panics
 /// If `data` is longer than [`MAX_DATA`].
 pub fn frame(receiver: u8, command: u16, data: &[u8], sequence: u16) -> [u8; FRAME_SIZE] {
-    assert!(data.len() <= MAX_DATA, "frame data must not exceed {MAX_DATA} bytes");
+    assert!(
+        data.len() <= MAX_DATA,
+        "frame data must not exceed {MAX_DATA} bytes"
+    );
     let mut b = header(0x25, receiver, command, sequence);
     let end = DATA_OFFSET + data.len();
     b[12..14].copy_from_slice(&(data.len() as u16).to_le_bytes());
@@ -75,9 +82,10 @@ pub fn parse_answer(reply: &[u8], sequence: u16) -> Option<Answer<'_>> {
     let data = &reply[DATA_OFFSET..DATA_OFFSET + len];
     match reply[1] {
         0x29 => Some(Answer::Value(data)),
-        0x89 => Some(Answer::Rejected(
-            u16::from_le_bytes([*data.first().unwrap_or(&0), *data.get(1).unwrap_or(&0)]),
-        )),
+        0x89 => Some(Answer::Rejected(u16::from_le_bytes([
+            *data.first().unwrap_or(&0),
+            *data.get(1).unwrap_or(&0),
+        ]))),
         _ => None,
     }
 }
