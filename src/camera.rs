@@ -72,7 +72,6 @@ pub const IMAGE_CONTROLS: &[(&str, u32)] = &[
 const FOCUS_ABSOLUTE: u32 = 0x009a_090a;
 /// V4L2 auto_exposure (exposure_auto): 0 automatic, 1 manual.
 const EXPOSURE_AUTO: u32 = 0x009a_0901;
-const GAIN: u32 = 0x0098_0913;
 const FOCUS_AUTO: u32 = 0x009a_090c;
 const ZOOM_ABSOLUTE: u32 = 0x009a_090d;
 const PAN_ABSOLUTE: u32 = 0x009a_0908;
@@ -367,14 +366,10 @@ impl Camera {
     /// Automatic exposure mode: the "auto on" frame, then the face/global selection. The camera does
     /// not report it, so it goes into the state file.
     pub fn set_exposure_mode(&self, mode: ExposureMode) -> Result<()> {
-        // back to automatic exposure in case it was set to manual; the camera keeps applying a
-        // manually lowered gain in automatic mode too, so give it the full range again (its
-        // factory state, checked on camera images)
+        // back to automatic exposure in case it was set to manual. Center sends only the
+        // metering here; its frame 0x2982 sets a manual exposure value and freezes the automatic
+        // exposure (image stays dark), so it must not be sent.
         self.dev.set_ctrl(EXPOSURE_AUTO, 0)?;
-        if let Some(range) = self.dev.ctrl_range(GAIN)? {
-            self.dev.set_ctrl(GAIN, range.max)?;
-        }
-        self.framed(&cmd::exposure_mode_type(self.seq.next()))?;
         self.short(&cmd::exposure_mode_select(mode))?;
         State {
             exposure_mode: Some(mode),

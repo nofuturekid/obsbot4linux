@@ -203,10 +203,6 @@ pub fn sleep(asleep: bool, seq: u16) -> [u8; FRAME_SIZE] {
 pub fn factory_reset(seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0xa802, &[0x01], seq)
 }
-/// First half of the exposure mode: automatic exposure on (capture 12: \`01 32\`).
-pub fn exposure_mode_type(seq: u16) -> [u8; FRAME_SIZE] {
-    frame(POWER, 0x2982, &[0x01, 0x32, 0x00, 0x00, 0x00], seq)
-}
 /// Moves the gimbal with OBSBOT Center's pose command 0x6444. Degrees; yaw positive turns
 /// the camera to its left, pitch positive tilts it down; None keeps that axis.
 pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8; FRAME_SIZE]> {
@@ -336,11 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn exposure_type_and_factory_reset_match_capture() {
-        assert_captured(
-            exposure_mode_type(0x15),
-            "aa2515000c00a89e0a0282290500f9270132000000",
-        );
+    fn exposure_and_factory_reset_match_capture() {
         assert_eq!(
             exposure_mode_select(ExposureMode::Global),
             [0x03, 0x01, 0x00]
