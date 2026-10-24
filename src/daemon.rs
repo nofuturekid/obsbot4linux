@@ -112,6 +112,21 @@ impl Worker {
         }
     }
 
+    /// The gimbal pose every tick, so a pose moved by AI tracking shows within a second.
+    fn publish_pose(&mut self) {
+        let Some(last) = self.last.as_mut() else {
+            return;
+        };
+        let Ok(pose) = Camera::open().and_then(|c| c.live_pose()) else {
+            return;
+        };
+        let pose = serde_json::to_value(pose).unwrap_or(Value::Null);
+        if last["pose"] != pose {
+            last["pose"] = pose;
+            self.hub.broadcast(last);
+        }
+    }
+
     fn tick(&mut self) {
         let status = Camera::open().and_then(|c| c.status());
         match status {
@@ -121,6 +136,8 @@ impl Worker {
                 let status_changed = self.last.as_ref().map(|l| &l["status"]) != Some(&status);
                 if status_changed || self.last_full.elapsed() >= FULL_EVERY {
                     self.publish_full(false);
+                } else {
+                    self.publish_pose();
                 }
             }
         }

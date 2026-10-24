@@ -94,6 +94,13 @@ pub struct Zoom {
     pub absolute: Option<i32>,
 }
 
+/// Degrees in t2l's angles: pan positive = camera left, tilt positive = up.
+#[derive(Debug, Serialize)]
+pub struct LivePose {
+    pub pan: f64,
+    pub tilt: f64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct FullStatus {
     /// Always true here; the daemon reports false when the camera is gone.
@@ -102,6 +109,8 @@ pub struct FullStatus {
     /// None when the camera did not answer query 0x0104.
     pub tracking: Option<Tracking>,
     pub zoom: Zoom,
+    /// Live gimbal pose from query 0x6604, also while AI tracking moves it.
+    pub pose: Option<LivePose>,
     pub image: BTreeMap<String, ImageControl>,
     pub state: State,
     pub capabilities: Vec<&'static str>,
@@ -180,6 +189,22 @@ impl Camera {
         Ok(f32::from_le_bytes(bytes))
     }
 
+    /// Query 0x6604 (OBSBOT Center reads it before saving a preset): 24 bytes of i16. Bytes
+    /// 8-9 are the pitch (positive down) and 10-11 the yaw (positive left) in tenths of a
+    /// degree; checked against gimbal moves (pan 20 -> 200, tilt 15 -> -150). The other values
+    /// change between reads at the same pose and are not decoded.
+    pub fn live_pose(&self) -> Result<LivePose> {
+        let d = self.query(0x6604)?;
+        let i16_at = |i: usize| d.get(i..i + 2).map(|b| i16::from_le_bytes([b[0], b[1]]));
+        match (i16_at(8), i16_at(10)) {
+            (Some(pitch), Some(yaw)) => Ok(LivePose {
+                pan: yaw as f64 / 10.0,
+                tilt: -(pitch as f64) / 10.0,
+            }),
+            _ => Err(Error::NoAnswer(0x6604)),
+        }
+    }
+
     pub fn image_controls(&self) -> Result<BTreeMap<String, ImageControl>> {
         let mut map = BTreeMap::new();
         for (name, id) in IMAGE_CONTROLS {
@@ -210,6 +235,7 @@ impl Camera {
             status,
             tracking,
             zoom: Zoom { factor, absolute },
+            pose: self.live_pose().ok(),
             image: self.image_controls()?,
             state: State::load(),
             capabilities: CAPABILITIES.to_vec(),
