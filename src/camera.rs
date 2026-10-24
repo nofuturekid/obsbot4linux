@@ -70,6 +70,8 @@ pub const IMAGE_CONTROLS: &[(&str, u32)] = &[
     ("autofocus", 0x009a_090c),
 ];
 const FOCUS_ABSOLUTE: u32 = 0x009a_090a;
+/// V4L2 auto_exposure (exposure_auto): 0 automatic, 1 manual.
+const EXPOSURE_AUTO: u32 = 0x009a_0901;
 const FOCUS_AUTO: u32 = 0x009a_090c;
 const ZOOM_ABSOLUTE: u32 = 0x009a_090d;
 const PAN_ABSOLUTE: u32 = 0x009a_0908;
@@ -364,6 +366,8 @@ impl Camera {
     /// Automatic exposure mode: the "auto on" frame, then the face/global selection. The camera does
     /// not report it, so it goes into the state file.
     pub fn set_exposure_mode(&self, mode: ExposureMode) -> Result<()> {
+        // back to automatic exposure in case it was set to manual
+        self.dev.set_ctrl(EXPOSURE_AUTO, 0)?;
         self.framed(&cmd::exposure_mode_type(self.seq.next()))?;
         self.short(&cmd::exposure_mode_select(mode))?;
         State {
@@ -371,6 +375,14 @@ impl Camera {
             ..State::load()
         }
         .save()
+    }
+
+    /// Manual exposure: V4L2 auto_exposure 1, after which the image controls exposure_time
+    /// (up to about 330 at 30 fps, one frame) and gain take effect. OBSBOT Center does this with
+    /// frames 0x2442 / 0x2982, which are not decoded; the UVC way was checked on camera images
+    /// (mean brightness 115 auto, 149 at exposure_time 100, 179 at 330).
+    pub fn set_manual_exposure(&self) -> Result<()> {
+        self.dev.set_ctrl(EXPOSURE_AUTO, 1)
     }
 
     pub fn factory_reset(&self) -> Result<()> {

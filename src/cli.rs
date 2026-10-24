@@ -54,8 +54,8 @@ pub enum Cmd {
     Speed { speed: TrackingSpeed },
     /// HDR
     Hdr { state: OnOff },
-    /// Automatic exposure mode (global or face); the camera does not report it, t2l remembers the last one set
-    Exposure { mode: ExposureMode },
+    /// Exposure: automatic metering over the whole picture (global) or on faces (face), or manual (then set exposure_time / gain with `image`)
+    Exposure { mode: ExposureArg },
     /// Zoom factor 1.0-4.0
     Zoom {
         #[arg(allow_negative_numbers = true)]
@@ -115,6 +115,13 @@ pub enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ExposureArg {
+    Global,
+    Face,
+    Manual,
 }
 
 #[derive(Subcommand)]
@@ -262,9 +269,17 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
         Cmd::Hdr { state } => cam
             .set_hdr(state.get())
             .and_then(|_| done("hdr", json!(onoff(state.get())))),
-        Cmd::Exposure { mode } => cam
-            .set_exposure_mode(mode)
-            .and_then(|_| done("exposure", value_name(mode))),
+        Cmd::Exposure { mode } => match mode {
+            ExposureArg::Manual => cam
+                .set_manual_exposure()
+                .and_then(|_| done("exposure", json!("manual"))),
+            ExposureArg::Global => cam
+                .set_exposure_mode(ExposureMode::Global)
+                .and_then(|_| done("exposure", json!("global"))),
+            ExposureArg::Face => cam
+                .set_exposure_mode(ExposureMode::Face)
+                .and_then(|_| done("exposure", json!("face"))),
+        },
         Cmd::Zoom { factor } => cam
             .set_zoom(factor)
             .and_then(|_| done("zoom", json!(factor))),
