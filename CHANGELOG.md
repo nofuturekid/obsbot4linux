@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to obsbot4linux. The format follows
+All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] - 0.1.0
@@ -25,7 +25,7 @@ All notable changes to obsbot4linux. The format follows
 
 ### Changed
 
-- Renamed from Tiny2Lite4Linux / `t2l` to obsbot4linux, so further OBSBOT
+- Renamed from Tiny2Lite4Linux / `t2l` to OBSBot4Linux / `obsbot4linux`, so further OBSBOT
   models can join as modules.
 
 ### Fixed

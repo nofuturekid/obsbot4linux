@@ -1,4 +1,4 @@
-# obsbot4linux
+# OBSBot4Linux
 
 Control OBSBOT webcams on Linux, currently the Tiny 2 Lite: every setting OBSBOT Center
 offers, from the console and from the DMS bar widget
