@@ -82,7 +82,8 @@ pub struct ImageControl {
 pub struct Zoom {
     /// Current zoom factor from query 0x6804 (follows gestures and preset recalls).
     pub factor: Option<f32>,
-    /// UVC zoom_absolute, 0-100 = 1x-4x.
+    /// UVC zoom_absolute, 0-100 = 1x-4x: the value last written over V4L2. It does not follow
+    /// a field of view change, a gesture or a preset recall; `factor` does.
     pub absolute: Option<i32>,
 }
 

@@ -6,9 +6,33 @@
 //! Offsets are those of the Tiny 2 Lite, see the protocol reference `status-block.md`.
 
 use crate::commands::{
-    AiMode, FieldOfView, HandSide, NoiseReduction, PickupDistance, SleepBackground, TrackingSpeed,
+    AiMode, HandSide, NoiseReduction, PickupDistance, SleepBackground, TrackingSpeed,
 };
 use serde::Serialize;
+
+/// Field of view as the camera reports it. The presets are digital zoom levels (wide 1.0,
+/// medium 1.15, narrow 1.47 by query 0x6804): setting one sets the zoom, and setting the zoom
+/// to any other factor turns status byte 0x11 to 3, reported as `custom`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FovReading {
+    Wide,
+    Medium,
+    Narrow,
+    Custom,
+}
+
+impl FovReading {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Wide),
+            1 => Some(Self::Medium),
+            2 => Some(Self::Narrow),
+            3 => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Status {
@@ -22,8 +46,8 @@ pub struct Status {
     /// Own image (3) is not settable from t2l; reported as None.
     pub sleep_background: Option<SleepBackground>,
     pub sleep_background_mirror: bool,
-    /// None while a digital zoom through V4L2 shows 3.
-    pub field_of_view: Option<FieldOfView>,
+    /// Status byte 0x11; `custom` (3) once the zoom was set to a factor other than a preset.
+    pub field_of_view: Option<FovReading>,
     pub mirror: bool,
     pub led: u8,
     pub mic_in_sleep: bool,
@@ -53,7 +77,7 @@ impl Status {
             auto_sleep_seconds: auto_sleep.unsigned_abs(),
             sleep_background: SleepBackground::from_u8(b[0x1b]),
             sleep_background_mirror: b[0x1d] != 0,
-            field_of_view: FieldOfView::from_u8(b[0x11]),
+            field_of_view: FovReading::from_u8(b[0x11]),
             mirror: b[0x13] != 0,
             led: b[0x21],
             mic_in_sleep: b[0x10] != 0,
@@ -149,6 +173,14 @@ mod tests {
         assert_eq!(s.auto_sleep_seconds, 120);
         assert_eq!(s.pickup_distance, Some(PickupDistance::Far));
         assert!(s.asleep);
+    }
+
+    #[test]
+    fn field_of_view_custom_zoom() {
+        // A zoom factor other than a preset level turns byte 0x11 to 3 (read live)
+        let fov = |v| Status::decode(&block(&[(0x11, v)])).field_of_view;
+        assert_eq!(fov(1), Some(FovReading::Medium));
+        assert_eq!(fov(3), Some(FovReading::Custom));
     }
 
     #[test]
