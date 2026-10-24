@@ -294,6 +294,20 @@ impl Camera {
         self.pair(cmd::zone_tracking(on, self.seq.next(), self.seq.next()))
     }
 
+    /// Zone area in t2l's angles (pan positive = left, tilt positive = up), converted to the
+    /// camera's (pitch positive = down).
+    pub fn set_zone_area(&self, pan: (f32, f32), tilt: (f32, f32)) -> Result<()> {
+        let seqs = [0; 4].map(|_| self.seq.next());
+        for f in cmd::zone_area(pan, (-tilt.1, -tilt.0), seqs)? {
+            self.framed(&f)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_zone_return_here(&self) -> Result<()> {
+        self.framed(&cmd::zone_return_here(self.seq.next()))
+    }
+
     pub fn set_zone_follow(&self, on: bool) -> Result<()> {
         self.framed(&cmd::zone_follow(on, self.seq.next()))?;
         State {

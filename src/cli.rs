@@ -154,6 +154,17 @@ pub enum ZoneCmd {
     Follow {
         state: OnOff,
     },
+    /// Area the zone tracking stays in, in degrees (no readback). Full area: --pan -100 100 --tilt -30 30
+    Area {
+        /// Pan range, MIN MAX, positive = camera left (-100..100)
+        #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
+        pan: Vec<f32>,
+        /// Tilt range, MIN MAX, positive = up (-30..30)
+        #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
+        tilt: Vec<f32>,
+    },
+    /// Take the current camera pose as the position the zone tracking returns to
+    ReturnHere,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -358,6 +369,12 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
             ZoneCmd::Follow { state } => cam
                 .set_zone_follow(state.get())
                 .and_then(|_| done("zone_follow", json!(onoff(state.get())))),
+            ZoneCmd::Area { pan, tilt } => cam
+                .set_zone_area((pan[0], pan[1]), (tilt[0], tilt[1]))
+                .and_then(|_| done("zone_area", json!({ "pan": pan, "tilt": tilt }))),
+            ZoneCmd::ReturnHere => cam
+                .set_zone_return_here()
+                .and_then(|_| done("zone_return", json!("here"))),
         },
         Cmd::Focus(f) => match f {
             FocusCmd::Mode { mode } => {

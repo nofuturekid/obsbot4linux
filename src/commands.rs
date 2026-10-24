@@ -187,6 +187,36 @@ pub fn zone_tracking(on: bool, seq1: u16, seq2: u16) -> [[u8; FRAME_SIZE]; 2] {
         frame(TRACKING, 0x5084, &[on as u8], seq2),
     ]
 }
+/// Zone tracking area, in the camera's own angles: yaw positive = camera left, pitch positive =
+/// down (as 0x6444). OBSBOT Center's full area is yaw -100..100, pitch -30..30 (captures 11, 18).
+pub const ZONE_YAW_LIMIT: f32 = 100.0;
+pub const ZONE_PITCH_LIMIT: f32 = 30.0;
+/// The four area frames (yaw min / max, pitch min / max), sent one after the other as Center does.
+pub fn zone_area(
+    yaw: (f32, f32),
+    pitch: (f32, f32),
+    seqs: [u16; 4],
+) -> Result<[[u8; FRAME_SIZE]; 4]> {
+    let ok = |(lo, hi): (f32, f32), limit: f32| {
+        lo.is_finite() && hi.is_finite() && lo < hi && lo >= -limit && hi <= limit
+    };
+    if !ok(yaw, ZONE_YAW_LIMIT) || !ok(pitch, ZONE_PITCH_LIMIT) {
+        return Err(invalid(
+            "zone area: min must be below max, pan within -100..100, tilt within -30..30",
+        ));
+    }
+    Ok([
+        frame(TRACKING, 0x4c04, &yaw.0.to_le_bytes(), seqs[0]),
+        frame(TRACKING, 0x4c84, &yaw.1.to_le_bytes(), seqs[1]),
+        frame(TRACKING, 0x4d04, &pitch.0.to_le_bytes(), seqs[2]),
+        frame(TRACKING, 0x4d84, &pitch.1.to_le_bytes(), seqs[3]),
+    ])
+}
+/// Zone tracking: take the current camera pose as the return position (Center's refresh icon
+/// next to "return to start position", capture 18).
+pub fn zone_return_here(seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x3904, &[0x01], seq)
+}
 /// Autofocus mode: face (true) or global (false). Receiver 2, u32 (capture 12).
 pub fn autofocus_mode(face: bool, seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0x3602, &(face as u32).to_le_bytes(), seq)
@@ -319,6 +349,25 @@ mod tests {
             autofocus_mode(true, 495),
             "aa25ef010c00a0e50a0202360400bffb01000000",
         );
+    }
+
+    #[test]
+    fn zone_area_matches_capture() {
+        // capture 11, seq 430-433: Center's full area
+        let frames = zone_area((-100.0, 100.0), (-30.0, 30.0), [430, 431, 432, 433]).unwrap();
+        assert_captured(frames[0], "aa25ae010c0091b60a04044c040068560000c8c2");
+        assert_captured(frames[1], "aa25af010c00a1b30a04844c040069f60000c842");
+        assert_captured(frames[2], "aa25b0010c0030160a04044d04003b970000f0c1");
+        assert_captured(frames[3], "aa25b1010c0000130a04844d04003a370000f041");
+        assert_captured(zone_return_here(56), "aa2538000c00bba30a040439010027ff01");
+    }
+
+    #[test]
+    fn zone_area_rejects_what_center_cannot_set() {
+        // an inverted or too wide area would leave the camera without a usable zone
+        assert!(zone_area((10.0, -10.0), (-30.0, 30.0), [0; 4]).is_err());
+        assert!(zone_area((-120.0, 100.0), (-30.0, 30.0), [0; 4]).is_err());
+        assert!(zone_area((-100.0, 100.0), (-30.0, 45.0), [0; 4]).is_err());
     }
 
     #[test]
