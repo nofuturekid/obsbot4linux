@@ -2,4 +2,8 @@
 
 //! t2l command line interface.
 
-fn main() {}
+mod cli;
+
+fn main() {
+    std::process::exit(cli::run());
+}

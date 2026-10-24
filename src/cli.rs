@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Argument parsing and output. Every command prints text, or JSON with `--json`.
+
+use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::{Value, json};
+use t2l::camera::Camera;
+use t2l::commands::*;
+use t2l::error::{Error, Result};
+use t2l::presets::Pose;
+
+#[derive(Parser)]
+#[command(name = "t2l", version, about = "Control the OBSBOT Tiny 2 Lite")]
+struct Cli {
+    /// Print machine-readable JSON (errors too, as {"ok":false,"error":...})
+    #[arg(long, global = true)]
+    json: bool,
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
+}
+
+impl OnOff {
+    fn get(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Show all settings (the camera's status block, tracking readback, zoom, image controls, remembered state)
+    Status,
+    /// Put the camera to sleep
+    Sleep,
+    /// Wake the camera
+    Wake,
+    /// AI tracking mode
+    Tracking { mode: AiMode },
+    /// Tracking speed
+    Speed { speed: TrackingSpeed },
+    /// HDR
+    Hdr { state: OnOff },
+    /// Exposure mode (the camera cannot report it; t2l remembers the last one set)
+    Exposure { mode: ExposureMode },
+    /// Zoom factor 1.0-4.0
+    Zoom {
+        #[arg(allow_negative_numbers = true)]
+        factor: f32,
+    },
+    /// Move the gimbal to an absolute pose in degrees (switches tracking to static first)
+    Gimbal {
+        /// Positive turns the camera to its left
+        #[arg(long, allow_negative_numbers = true)]
+        pan: Option<f32>,
+        /// Positive tilts the camera up
+        #[arg(long, allow_negative_numbers = true)]
+        tilt: Option<f32>,
+    },
+    /// Field of view (ignored by the camera while it sleeps)
+    Fov { fov: FieldOfView },
+    /// Status LED brightness 0 (off) to 3
+    Led { brightness: u8 },
+    /// Mirror the image
+    Mirror { state: OnOff },
+    /// Invert view and gimbal (reverses the gimbal's pan direction)
+    Invert { state: OnOff },
+    /// Auto-sleep: "off" or a time in seconds
+    AutoSleep { time: String },
+    /// Picture shown while the camera sleeps
+    SleepBackground { background: SleepBackground },
+    /// Mirror the sleep background
+    SleepBackgroundMirror { state: OnOff },
+    /// Microphone settings
+    #[command(subcommand)]
+    Audio(Audio),
+    /// Gesture control
+    #[command(subcommand)]
+    Gesture(GestureCmd),
+    /// Hand tracking: which hand
+    Hand { side: HandSide },
+    /// Zone tracking
+    Zone { state: OnOff },
+    /// UVC image control, e.g. "image brightness 128" (names are in "status")
+    Image {
+        control: String,
+        #[arg(allow_negative_numbers = true)]
+        value: i32,
+    },
+    /// Presets stored in the camera (slots 0-2)
+    #[command(subcommand)]
+    Preset(PresetCmd),
+    /// Reset the camera to factory settings (it restarts and deletes its presets)
+    FactoryReset {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum Audio {
+    /// Microphone noise reduction
+    Noise { level: NoiseReduction },
+    /// Automatic gain
+    Gain { state: OnOff },
+    /// Pickup distance
+    Distance { distance: PickupDistance },
+    /// Keep the microphone on while the camera sleeps
+    SleepMic { state: OnOff },
+    /// Microphone on/off; off makes the camera restart (about 18 s)
+    Mic { state: OnOff },
+}
+
+#[derive(Subcommand)]
+enum GestureCmd {
+    /// Switch one gesture on or off
+    Set { gesture: Gesture, state: OnOff },
+    /// Zoom ratio of the zoom gestures, 1.0-4.0
+    ZoomRatio { ratio: f32 },
+}
+
+#[derive(Subcommand)]
+enum PresetCmd {
+    /// List the presets
+    List,
+    /// Save a pose to a slot; without --pan/--tilt/--zoom the current pose is used
+    /// (the last gimbal pose t2l sent, else the one V4L2 last set; live zoom)
+    Save {
+        slot: u8,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, allow_negative_numbers = true, requires_all = ["tilt", "zoom"])]
+        pan: Option<f32>,
+        #[arg(long, allow_negative_numbers = true, requires_all = ["pan", "zoom"])]
+        tilt: Option<f32>,
+        #[arg(long, requires_all = ["pan", "tilt"])]
+        zoom: Option<f32>,
+    },
+    /// Rename a preset (printable ASCII, up to 32 characters)
+    Rename { slot: u8, name: String },
+    /// Delete a preset
+    Delete { slot: u8 },
+    /// Move the camera to a preset
+    Recall { slot: u8 },
+}
+
+fn onoff(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
+fn value_name<T: serde::Serialize>(v: T) -> Value {
+    serde_json::to_value(v).unwrap_or(Value::Null)
+}
+
+/// Runs the command and returns (JSON result, text for humans). Setters answer with
+/// {"ok","command","value"}; `status` prints the status object itself.
+fn execute(cmd: Cmd) -> Result<(Value, String)> {
+    // refuse before opening the camera
+    if let Cmd::FactoryReset { yes: false } = cmd {
+        return Err(Error::Invalid("factory reset deletes presets and settings; pass --yes".into()));
+    }
+    let cam = Camera::open()?;
+    // (command name, value) of a setter
+    let done = |name: &str, value: Value| {
+        let text = match &value {
+            Value::Null => name.to_string(),
+            Value::String(s) => format!("{name}: {s}"),
+            v => format!("{name}: {v}"),
+        };
+        Ok((json!({"ok": true, "command": name, "value": value}), text))
+    };
+    match cmd {
+        Cmd::Status => {
+            let full = value_name(cam.full_status()?);
+            let text = flatten(&full);
+            Ok((full, text))
+        }
+        Cmd::Sleep => cam.sleep(true).and_then(|_| done("sleep", Value::Null)),
+        Cmd::Wake => cam.sleep(false).and_then(|_| done("wake", Value::Null)),
+        Cmd::Tracking { mode } => cam.set_ai_mode(mode).and_then(|_| done("tracking", value_name(mode))),
+        Cmd::Speed { speed } => cam.set_tracking_speed(speed).and_then(|_| done("speed", value_name(speed))),
+        Cmd::Hdr { state } => cam.set_hdr(state.get()).and_then(|_| done("hdr", json!(onoff(state.get())))),
+        Cmd::Exposure { mode } => cam.set_exposure_mode(mode).and_then(|_| done("exposure", value_name(mode))),
+        Cmd::Zoom { factor } => cam.set_zoom(factor).and_then(|_| done("zoom", json!(factor))),
+        Cmd::Gimbal { pan, tilt } => {
+            cam.gimbal(pan, tilt).and_then(|_| done("gimbal", json!({"pan": pan, "tilt": tilt})))
+        }
+        Cmd::Fov { fov } => cam.set_field_of_view(fov).and_then(|_| done("fov", value_name(fov))),
+        Cmd::Led { brightness } => cam.set_led(brightness).and_then(|_| done("led", json!(brightness))),
+        Cmd::Mirror { state } => cam.set_mirror(state.get()).and_then(|_| done("mirror", json!(onoff(state.get())))),
+        Cmd::Invert { state } => cam.set_invert(state.get()).and_then(|_| done("invert", json!(onoff(state.get())))),
+        Cmd::AutoSleep { time } => {
+            let seconds = if time == "off" {
+                None
+            } else {
+                Some(time.parse::<u16>().map_err(|_| Error::Invalid("auto-sleep is \"off\" or seconds".into()))?)
+            };
+            cam.set_auto_sleep(seconds).and_then(|_| done("auto_sleep", json!(seconds)))
+        }
+        Cmd::SleepBackground { background } => {
+            cam.set_sleep_background(background).and_then(|_| done("sleep_background", value_name(background)))
+        }
+        Cmd::SleepBackgroundMirror { state } => cam
+            .set_sleep_background_mirror(state.get())
+            .and_then(|_| done("sleep_background_mirror", json!(onoff(state.get())))),
+        Cmd::Audio(a) => match a {
+            Audio::Noise { level } => cam.set_noise_reduction(level).and_then(|_| done("audio_noise", value_name(level))),
+            Audio::Gain { state } => cam.set_auto_gain(state.get()).and_then(|_| done("audio_gain", json!(onoff(state.get())))),
+            Audio::Distance { distance } => {
+                cam.set_pickup_distance(distance).and_then(|_| done("audio_distance", value_name(distance)))
+            }
+            Audio::SleepMic { state } => {
+                cam.set_mic_in_sleep(state.get()).and_then(|_| done("audio_sleep_mic", json!(onoff(state.get()))))
+            }
+            Audio::Mic { state } => cam.set_microphone(state.get()).and_then(|_| done("audio_mic", json!(onoff(state.get())))),
+        },
+        Cmd::Gesture(g) => match g {
+            GestureCmd::Set { gesture, state } => cam
+                .set_gesture(gesture, state.get())
+                .and_then(|_| done("gesture", json!({"gesture": gesture, "state": onoff(state.get())}))),
+            GestureCmd::ZoomRatio { ratio } => {
+                cam.set_gesture_zoom_ratio(ratio).and_then(|_| done("gesture_zoom_ratio", json!(ratio)))
+            }
+        },
+        Cmd::Hand { side } => cam.set_hand_side(side).and_then(|_| done("hand", value_name(side))),
+        Cmd::Zone { state } => cam.set_zone_tracking(state.get()).and_then(|_| done("zone", json!(onoff(state.get())))),
+        Cmd::Image { control, value } => {
+            cam.set_image(&control, value).and_then(|_| done("image", json!({"control": control, "value": value})))
+        }
+        Cmd::Preset(p) => match p {
+            PresetCmd::List => {
+                let list = cam.presets()?;
+                let text = if list.is_empty() {
+                    "no presets".to_string()
+                } else {
+                    list.iter()
+                        .map(|p| {
+                            format!("slot {}: {:?}  pan {:.2}  tilt {:.2}  zoom {:.2}", p.slot, p.name, p.pose.pan, p.pose.tilt, p.pose.zoom)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Ok((json!({"ok": true, "command": "preset_list", "value": list}), text))
+            }
+            PresetCmd::Save { slot, name, pan, tilt, zoom } => {
+                let pose = pan.zip(tilt).zip(zoom).map(|((pan, tilt), zoom)| Pose { pan, tilt, zoom });
+                let saved = cam.save_preset(slot, name.as_deref(), pose)?;
+                done("preset_save", json!({"slot": slot, "pose": saved}))
+            }
+            PresetCmd::Rename { slot, name } => {
+                cam.rename_preset(slot, &name).and_then(|_| done("preset_rename", json!({"slot": slot, "name": name})))
+            }
+            PresetCmd::Delete { slot } => cam.delete_preset(slot).and_then(|_| done("preset_delete", json!({"slot": slot}))),
+            PresetCmd::Recall { slot } => cam.recall_preset(slot).and_then(|_| done("preset_recall", json!({"slot": slot}))),
+        },
+        Cmd::FactoryReset { .. } => cam.factory_reset().and_then(|_| done("factory_reset", Value::Null)),
+    }
+}
+
+/// Text view of nested JSON: one "path: value" line per leaf.
+fn flatten(v: &Value) -> String {
+    fn walk(prefix: &str, v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => m.iter().for_each(|(k, v)| {
+                walk(&if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") }, v, out)
+            }),
+            Value::Array(a) if a.iter().all(Value::is_string) => out.push(format!(
+                "{prefix}: {}",
+                a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+            )),
+            Value::String(s) => out.push(format!("{prefix}: {s}")),
+            v => out.push(format!("{prefix}: {v}")),
+        }
+    }
+    let mut out = Vec::new();
+    walk("", v, &mut out);
+    out.join("\n")
+}
+
+pub fn run() -> i32 {
+    let cli = Cli::parse();
+    match execute(cli.command) {
+        Ok((json, text)) => {
+            if cli.json {
+                println!("{json}");
+            } else {
+                println!("{text}");
+            }
+            0
+        }
+        Err(e) => {
+            if cli.json {
+                println!("{}", json!({"ok": false, "error": e.to_string()}));
+            } else {
+                eprintln!("t2l: {e}");
+            }
+            1
+        }
+    }
+}
