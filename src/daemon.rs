@@ -10,6 +10,7 @@ use clap::Parser;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::os::fd::FromRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -192,12 +193,15 @@ fn bind() -> Result<UnixListener> {
     if let Some(l) = inherited_listener() {
         return Ok(l);
     }
-    let path = socket_path();
+    let path = socket_path()
+        .ok_or_else(|| Error::Invalid("neither XDG_RUNTIME_DIR nor T2L_SOCKET is set".into()))?;
     if UnixStream::connect(&path).is_ok() {
         return Err(Error::Invalid(format!("a daemon is already listening on {}", path.display())));
     }
     let _ = std::fs::remove_file(&path); // stale socket of a dead daemon
-    Ok(UnixListener::bind(&path)?)
+    let listener = UnixListener::bind(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 pub fn run() -> Result<()> {

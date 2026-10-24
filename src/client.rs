@@ -17,7 +17,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Sends the command line to the daemon and prints its answer like a direct call.
 /// Returns None when no daemon is listening (the caller then runs the command itself).
 pub fn forward(cli: &Cli, args: Vec<String>) -> Option<i32> {
-    let stream = UnixStream::connect(socket_path()).ok()?;
+    let stream = UnixStream::connect(socket_path()?).ok()?;
     let finish = |msg: String| -> Option<i32> { Some(crate::cli::print_error(cli.json, &msg)) };
     stream.set_read_timeout(Some(REPLY_TIMEOUT)).ok()?;
     let mut writer = stream.try_clone().ok()?;
@@ -42,7 +42,9 @@ pub fn forward(cli: &Cli, args: Vec<String>) -> Option<i32> {
 }
 
 fn connect_or_start() -> Result<UnixStream> {
-    if let Ok(s) = UnixStream::connect(socket_path()) {
+    let path = socket_path()
+        .ok_or_else(|| Error::Invalid("neither XDG_RUNTIME_DIR nor T2L_SOCKET is set".into()))?;
+    if let Ok(s) = UnixStream::connect(&path) {
         return Ok(s);
     }
     let exe = std::env::current_exe()?;
@@ -56,7 +58,7 @@ fn connect_or_start() -> Result<UnixStream> {
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match UnixStream::connect(socket_path()) {
+        match UnixStream::connect(&path) {
             Ok(s) => return Ok(s),
             Err(e) if Instant::now() >= deadline => {
                 return Err(Error::Invalid(format!("cannot reach the daemon: {e}")));

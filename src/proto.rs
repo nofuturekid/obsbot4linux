@@ -15,12 +15,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub fn socket_path() -> PathBuf {
+/// `T2L_SOCKET`, else `$XDG_RUNTIME_DIR/t2l.sock`. There is no fallback to a shared
+/// directory such as /tmp: another local user could create the socket first.
+pub fn socket_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("T2L_SOCKET") {
-        return p.into();
+        return Some(p.into());
     }
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| "/tmp".into());
-    dir.join("t2l.sock")
+    std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("t2l.sock"))
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
