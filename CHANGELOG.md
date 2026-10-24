@@ -22,6 +22,8 @@ All notable changes to OBSBot4Linux. The format follows
   autofocus, camera presets, start pose, factory reset.
 - Live gimbal pose (query `0x6604`) in the status, read every second by the
   daemon.
+- Arch PKGBUILD and socket-activated systemd user units
+  (`obsbot4linux.socket` / `.service`).
 
 ### Changed
 
