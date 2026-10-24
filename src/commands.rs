@@ -35,8 +35,9 @@ setting!(TrackingSpeed { Standard = 0, Sport = 2 });
 setting!(SleepBackground { Black = 0, Image = 1 });
 setting!(HandSide { Right = 0, Left = 1 });
 setting!(
-    /// Exposure mode. The camera does not report it; t2l remembers the last one set.
-    ExposureMode { Manual = 0, Global = 1, Face = 2 }
+    /// Automatic exposure mode. The camera reports it only as status byte 0x07 (face);
+    /// t2l also remembers the last one set. Manual exposure is not mapped yet.
+    ExposureMode { Global = 0, Face = 1 }
 );
 
 /// AI tracking mode as (mode, sub-mode), the pair of status bytes 0x18 / 0x1c.
@@ -148,13 +149,9 @@ pub fn pickup_distance(distance: PickupDistance) -> [u8; 3] {
 pub fn microphone(on: bool) -> [u8; 3] {
     [0x1c, 0x01, on as u8]
 }
-/// Second half of the exposure mode (not for manual).
-pub fn exposure_mode_select(mode: ExposureMode) -> Option<[u8; 3]> {
-    match mode {
-        ExposureMode::Manual => None,
-        ExposureMode::Global => Some([0x03, 0x01, 0x00]),
-        ExposureMode::Face => Some([0x03, 0x01, 0x01]),
-    }
+/// Second half of the exposure mode: global or face (capture 12: \`03 01 00\` / \`03 01 01\`).
+pub fn exposure_mode_select(mode: ExposureMode) -> [u8; 3] {
+    [0x03, 0x01, mode.to_u8()]
 }
 
 // --- framed commands (selector 2) ---
@@ -198,14 +195,9 @@ pub fn sleep(asleep: bool, seq: u16) -> [u8; FRAME_SIZE] {
 pub fn factory_reset(seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0xa802, &[0x01], seq)
 }
-/// First half of the exposure mode: manual or automatic.
-pub fn exposure_mode_type(mode: ExposureMode, seq: u16) -> [u8; FRAME_SIZE] {
-    let data: [u8; 5] = if mode == ExposureMode::Manual {
-        [0x02, 0x04, 0x00, 0x00, 0x00]
-    } else {
-        [0x01, 0x32, 0x00, 0x00, 0x00]
-    };
-    frame(POWER, 0x2982, &data, seq)
+/// First half of the exposure mode: automatic exposure on (capture 12: \`01 32\`).
+pub fn exposure_mode_type(seq: u16) -> [u8; FRAME_SIZE] {
+    frame(POWER, 0x2982, &[0x01, 0x32, 0x00, 0x00, 0x00], seq)
 }
 /// Moves the gimbal with OBSBOT Center's pose command 0x6444. Degrees; yaw positive turns
 /// the camera to its left, pitch positive tilts it down; None keeps that axis.
@@ -279,8 +271,9 @@ mod tests {
 
     #[test]
     fn exposure_type_and_factory_reset_match_capture() {
-        assert_captured(exposure_mode_type(ExposureMode::Manual, 0x16), "aa2516000c0058910a0282290500b2af0204000000");
-        assert_captured(exposure_mode_type(ExposureMode::Face, 0x15), "aa2515000c00a89e0a0282290500f9270132000000");
+        assert_captured(exposure_mode_type(0x15), "aa2515000c00a89e0a0282290500f9270132000000");
+        assert_eq!(exposure_mode_select(ExposureMode::Global), [0x03, 0x01, 0x00]);
+        assert_eq!(exposure_mode_select(ExposureMode::Face), [0x03, 0x01, 0x01]);
         assert_captured(factory_reset(0x0b), "aa250b000c00695e0a0202a8010027ff01");
     }
 

@@ -239,13 +239,11 @@ impl Camera {
         self.pair(cmd::zone_tracking(on, self.seq.next(), self.seq.next()))
     }
 
-    /// Exposure mode: the type frame, then the face/global selection. The camera does
+    /// Automatic exposure mode: the "auto on" frame, then the face/global selection. The camera does
     /// not report it, so it goes into the state file.
     pub fn set_exposure_mode(&self, mode: ExposureMode) -> Result<()> {
-        self.framed(&cmd::exposure_mode_type(mode, self.seq.next()))?;
-        if let Some(select) = cmd::exposure_mode_select(mode) {
-            self.short(&select)?;
-        }
+        self.framed(&cmd::exposure_mode_type(self.seq.next()))?;
+        self.short(&cmd::exposure_mode_select(mode))?;
         State { exposure_mode: Some(mode), ..State::load() }.save()
     }
 

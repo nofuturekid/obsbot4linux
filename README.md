@@ -37,7 +37,9 @@ mode) the daemon remembers.
 
 ## Status
 
-Local only, in planning. Builds on the Tiny 2 Lite support written for
+Local only. Step 1 is done: the `t2l` CLI (library plus binary) controls the camera
+directly, with `--json` for every command; the daemon, `t2l watch` and the DMS widget
+are not written yet. Builds on the Tiny 2 Lite support written for
 [Tiny4Linux](https://github.com/OpenFoxes/Tiny4Linux) (EUPL-1.2).
 
 ## Licence

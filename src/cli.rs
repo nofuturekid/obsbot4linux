@@ -2,6 +2,8 @@
 
 //! Argument parsing and output. Every command prints text, or JSON with `--json`.
 
+use std::io::Write;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use t2l::camera::Camera;
@@ -45,7 +47,7 @@ enum Cmd {
     Speed { speed: TrackingSpeed },
     /// HDR
     Hdr { state: OnOff },
-    /// Exposure mode (the camera cannot report it; t2l remembers the last one set)
+    /// Automatic exposure mode (global or face); the camera does not report it, t2l remembers the last one set
     Exposure { mode: ExposureMode },
     /// Zoom factor 1.0-4.0
     Zoom {
@@ -285,16 +287,13 @@ pub fn run() -> i32 {
     let cli = Cli::parse();
     match execute(cli.command) {
         Ok((json, text)) => {
-            if cli.json {
-                println!("{json}");
-            } else {
-                println!("{text}");
-            }
+            // a closed pipe (`t2l status | head`) is not an error
+            let _ = writeln!(std::io::stdout(), "{}", if cli.json { json.to_string() } else { text });
             0
         }
         Err(e) => {
             if cli.json {
-                println!("{}", json!({"ok": false, "error": e.to_string()}));
+                let _ = writeln!(std::io::stdout(), "{}", json!({"ok": false, "error": e.to_string()}));
             } else {
                 eprintln!("t2l: {e}");
             }

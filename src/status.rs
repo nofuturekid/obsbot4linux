@@ -83,7 +83,6 @@ pub struct Tracking {
     pub direction_change: bool,
     /// Gesture zoom ratio, 1.0-4.0.
     pub gesture_zoom_ratio: f32,
-    pub tracking_speed: TrackingSpeed,
     pub zone_tracking: bool,
     pub invert: bool,
 }
@@ -107,7 +106,7 @@ impl Tracking {
             dynamic_zoom: d[5] != 0,
             direction_change: d[6] != 0,
             gesture_zoom_ratio: d[7] as f32 / 10.0,
-            tracking_speed: TrackingSpeed::from_u8(d[8]).unwrap_or(TrackingSpeed::Standard),
+            // byte 8 (speed) did not follow the setting live; the speed is status byte 0x24.
             // byte 9 is always 0; zone tracking is byte 10
             zone_tracking: d[10] != 0,
             invert: d[11] != 0,
@@ -170,7 +169,6 @@ mod tests {
         assert!(t.target_lock && t.dynamic_zoom && t.zone_tracking && t.invert);
         assert!(!t.zoom_gesture && !t.direction_change);
         assert_eq!(t.gesture_zoom_ratio, 3.5);
-        assert_eq!(t.tracking_speed, TrackingSpeed::Sport);
         assert!(Tracking::decode(&[0; 11]).is_none());
     }
 }
