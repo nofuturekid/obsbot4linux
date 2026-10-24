@@ -45,6 +45,18 @@ each get a module behind the same commands once one is at hand to capture and te
 Builds on the Tiny 2 Lite support written for
 [Tiny4Linux](https://github.com/OpenFoxes/Tiny4Linux) (EUPL-1.2).
 
+## Install
+
+Arch Linux, from this checkout:
+
+```sh
+cd packaging/arch && makepkg -si
+systemctl --user enable --now obsbot4linux.socket
+```
+
+The socket starts `obsbot4linux.service` on the first connection. Without the
+units, `obsbot4linux watch` starts a daemon itself.
+
 ## Licence
 
 GPL-3.0-or-later, see [LICENSE](LICENSE). Code taken over from Tiny4Linux is
