@@ -8,7 +8,7 @@ use crate::device::{CtrlRange, Device};
 use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
 use crate::presets::{self, Pose, Preset};
-use crate::state::State;
+use crate::state::{Startup, State};
 use crate::status::{Status, Tracking};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -43,6 +43,9 @@ pub const CAPABILITIES: &[&str] = &[
     "gesture",
     "hand",
     "zone",
+    "zone_follow",
+    "focus",
+    "startup",
     "image",
     "preset",
     "factory_reset",
@@ -66,6 +69,8 @@ pub const IMAGE_CONTROLS: &[(&str, u32)] = &[
     ("focus", 0x009a_090a),
     ("autofocus", 0x009a_090c),
 ];
+const FOCUS_ABSOLUTE: u32 = 0x009a_090a;
+const FOCUS_AUTO: u32 = 0x009a_090c;
 const ZOOM_ABSOLUTE: u32 = 0x009a_090d;
 const PAN_ABSOLUTE: u32 = 0x009a_0908;
 const TILT_ABSOLUTE: u32 = 0x009a_0909;
@@ -285,6 +290,75 @@ impl Camera {
     }
     pub fn set_zone_tracking(&self, on: bool) -> Result<()> {
         self.pair(cmd::zone_tracking(on, self.seq.next(), self.seq.next()))
+    }
+
+    pub fn set_zone_follow(&self, on: bool) -> Result<()> {
+        self.framed(&cmd::zone_follow(on, self.seq.next()))?;
+        State {
+            zone_follow: Some(on),
+            ..State::load()
+        }
+        .save()
+    }
+
+    /// Autofocus mode: face or global (status byte 0x0d follows).
+    pub fn set_autofocus_mode(&self, face: bool) -> Result<()> {
+        self.framed(&cmd::autofocus_mode(face, self.seq.next()))
+    }
+
+    /// Continuous autofocus on/off (UVC focus_automatic_continuous; status byte 0x0e follows).
+    pub fn set_autofocus(&self, on: bool) -> Result<()> {
+        self.dev.set_ctrl(FOCUS_AUTO, on as i32)
+    }
+
+    /// Manual focus 0-100 (UVC focus_absolute; status byte 0x0f follows); turns autofocus off.
+    pub fn set_focus(&self, value: i32) -> Result<()> {
+        let r = self
+            .dev
+            .ctrl_range(FOCUS_ABSOLUTE)?
+            .ok_or_else(|| Error::Unsupported("no focus control".into()))?;
+        if value < r.min || value > r.max {
+            return Err(Error::Invalid(format!("focus is {}-{}", r.min, r.max)));
+        }
+        self.dev.set_ctrl(FOCUS_AUTO, 0)?;
+        self.dev.set_ctrl(FOCUS_ABSOLUTE, value)
+    }
+
+    /// Initial state: the pose the camera moves to at power-on, then "no picture settings".
+    /// There is no readback, so it goes into the state file.
+    pub fn set_startup(&self, pose: Pose, preset: Option<u8>) -> Result<()> {
+        let source = preset.map_or(3, u32::from);
+        let pose_frame = presets::startup_pose(source, pose, self.seq.next())?;
+        self.framed(&pose_frame)?;
+        sleep(PAIR_GAP);
+        self.framed(&presets::startup_picture_settings(self.seq.next()))?;
+        let startup = Startup {
+            preset,
+            pan: pose.pan,
+            tilt: pose.tilt,
+            zoom: pose.zoom,
+        };
+        State {
+            startup: Some(startup),
+            ..State::load()
+        }
+        .save()
+    }
+
+    /// Start pose from a stored preset.
+    pub fn set_startup_preset(&self, slot: u8) -> Result<Pose> {
+        presets::check_slot(slot)?;
+        let p = self.presets()?.into_iter().find(|p| p.slot == slot);
+        let p = p.ok_or_else(|| Error::Invalid(format!("preset slot {slot} is empty")))?;
+        self.set_startup(p.pose, Some(slot))?;
+        Ok(p.pose)
+    }
+
+    /// Start pose from the current pose (remembered gimbal pose, live zoom).
+    pub fn set_startup_current(&self) -> Result<Pose> {
+        let pose = self.current_pose()?;
+        self.set_startup(pose, None)?;
+        Ok(pose)
     }
 
     /// Automatic exposure mode: the "auto on" frame, then the face/global selection. The camera does

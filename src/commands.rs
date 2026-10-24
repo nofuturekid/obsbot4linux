@@ -187,6 +187,14 @@ pub fn zone_tracking(on: bool, seq1: u16, seq2: u16) -> [[u8; FRAME_SIZE]; 2] {
         frame(TRACKING, 0x5084, &[on as u8], seq2),
     ]
 }
+/// Autofocus mode: face (true) or global (false). Receiver 2, u32 (capture 12).
+pub fn autofocus_mode(face: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(POWER, 0x3602, &(face as u32).to_le_bytes(), seq)
+}
+/// Zone tracking: automatically follow new targets.
+pub fn zone_follow(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x4e04, &[on as u8], seq)
+}
 /// Sleep (true) or wake (false) from the power button.
 pub fn sleep(asleep: bool, seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0xa0c2, &(asleep as u32).to_le_bytes(), seq)
@@ -302,6 +310,29 @@ mod tests {
         let [a, b] = zone_tracking(false, 0x0196, 0x0197);
         assert_captured(a, "aa2596010c0040900a04c4080100e63f00");
         assert_captured(b, "aa2597010c00216f0a0484500100e63f00");
+    }
+
+    #[test]
+    fn autofocus_mode_matches_capture() {
+        // capture 12: global (seq 494), then face (seq 495)
+        assert_captured(
+            autofocus_mode(false, 494),
+            "aa25ee010c00f1200a0202360400be07000000",
+        );
+        assert_captured(
+            autofocus_mode(true, 495),
+            "aa25ef010c00a0e50a0202360400bffb01000000",
+        );
+    }
+
+    #[test]
+    fn zone_follow_matches_capture() {
+        // capture 11 (seq 452 on, 476 off)
+        assert_captured(zone_follow(true, 452), "aa25c4010c0033e90a04044e010027ff01");
+        assert_captured(
+            zone_follow(false, 476),
+            "aa25dc010c00b3960a04044e0100e63f00",
+        );
     }
 
     #[test]

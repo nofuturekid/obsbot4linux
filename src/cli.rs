@@ -93,7 +93,14 @@ pub enum Cmd {
     /// Hand tracking: which hand
     Hand { side: HandSide },
     /// Zone tracking
-    Zone { state: OnOff },
+    #[command(subcommand)]
+    Zone(ZoneCmd),
+    /// Focus: autofocus mode, continuous autofocus, manual focus
+    #[command(subcommand)]
+    Focus(FocusCmd),
+    /// Initial state: the pose the camera moves to when it powers on (the camera cannot report it)
+    #[command(subcommand)]
+    Startup(StartupCmd),
     /// UVC image control, e.g. "image brightness 128" (names are in "status")
     Image {
         control: String,
@@ -130,6 +137,54 @@ pub enum GestureCmd {
     Set { gesture: Gesture, state: OnOff },
     /// Zoom ratio of the zoom gestures, 1.0-4.0
     ZoomRatio { ratio: f32 },
+}
+
+#[derive(Subcommand)]
+pub enum ZoneCmd {
+    On,
+    Off,
+    /// Automatically follow new targets (no readback; remembered in the state file)
+    Follow {
+        state: OnOff,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum FocusMode {
+    Face,
+    Global,
+}
+
+#[derive(Subcommand)]
+pub enum FocusCmd {
+    /// Autofocus mode
+    Mode { mode: FocusMode },
+    /// Continuous autofocus on/off
+    Auto { state: OnOff },
+    /// Manual focus 0-100 (turns autofocus off)
+    Set { value: i32 },
+}
+
+#[derive(Subcommand)]
+pub enum StartupCmd {
+    /// Set the start pose: --pan/--tilt/--zoom, or --preset <slot>, or --current. There is
+    /// no way known to clear it; pan 0, tilt 0, zoom 1 is the neutral start.
+    Set {
+        /// Positive turns the camera to its left
+        #[arg(long, allow_negative_numbers = true, requires_all = ["tilt", "zoom"])]
+        pan: Option<f32>,
+        /// Positive tilts the camera up
+        #[arg(long, allow_negative_numbers = true, requires_all = ["pan", "zoom"])]
+        tilt: Option<f32>,
+        #[arg(long, requires_all = ["pan", "tilt"])]
+        zoom: Option<f32>,
+        /// Use the pose of a stored preset (slot as in "preset list", 0-2)
+        #[arg(long, conflicts_with_all = ["pan", "current"])]
+        preset: Option<u8>,
+        /// Use the current pose (remembered gimbal pose, live zoom)
+        #[arg(long, conflicts_with = "pan")]
+        current: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -279,9 +334,51 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
         Cmd::Hand { side } => cam
             .set_hand_side(side)
             .and_then(|_| done("hand", value_name(side))),
-        Cmd::Zone { state } => cam
-            .set_zone_tracking(state.get())
-            .and_then(|_| done("zone", json!(onoff(state.get())))),
+        Cmd::Zone(z) => match z {
+            ZoneCmd::On | ZoneCmd::Off => {
+                let on = matches!(z, ZoneCmd::On);
+                cam.set_zone_tracking(on)
+                    .and_then(|_| done("zone", json!(onoff(on))))
+            }
+            ZoneCmd::Follow { state } => cam
+                .set_zone_follow(state.get())
+                .and_then(|_| done("zone_follow", json!(onoff(state.get())))),
+        },
+        Cmd::Focus(f) => match f {
+            FocusCmd::Mode { mode } => {
+                let face = matches!(mode, FocusMode::Face);
+                cam.set_autofocus_mode(face)
+                    .and_then(|_| done("focus_mode", json!(if face { "face" } else { "global" })))
+            }
+            FocusCmd::Auto { state } => cam
+                .set_autofocus(state.get())
+                .and_then(|_| done("focus_auto", json!(onoff(state.get())))),
+            FocusCmd::Set { value } => cam
+                .set_focus(value)
+                .and_then(|_| done("focus", json!(value))),
+        },
+        Cmd::Startup(StartupCmd::Set {
+            pan,
+            tilt,
+            zoom,
+            preset,
+            current,
+        }) => {
+            let pose = match (pan.zip(tilt).zip(zoom), preset, current) {
+                (Some(((pan, tilt), zoom)), None, false) => {
+                    cam.set_startup(Pose { pan, tilt, zoom }, None)?;
+                    Pose { pan, tilt, zoom }
+                }
+                (None, Some(slot), false) => cam.set_startup_preset(slot)?,
+                (None, None, true) => cam.set_startup_current()?,
+                _ => {
+                    return Err(Error::Invalid(
+                        "give --pan/--tilt/--zoom, or --preset, or --current".into(),
+                    ));
+                }
+            };
+            done("startup", json!({"pose": pose, "preset": preset}))
+        }
         Cmd::Image { control, value } => cam
             .set_image(&control, value)
             .and_then(|_| done("image", json!({"control": control, "value": value}))),

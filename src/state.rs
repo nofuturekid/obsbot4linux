@@ -34,6 +34,19 @@ pub struct State {
     /// Last pose sent; None when unknown (never set, or tracking may have moved it since).
     pub gimbal: Option<Gimbal>,
     pub exposure_mode: Option<ExposureMode>,
+    /// Zone tracking "follow new targets"; the camera has no readback for it.
+    pub zone_follow: Option<bool>,
+    /// Start pose last sent as initial state (applied by the camera at power-on); no readback.
+    pub startup: Option<Startup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Startup {
+    /// Preset slot the start pose was taken from, if any.
+    pub preset: Option<u8>,
+    pub pan: f32,
+    pub tilt: f32,
+    pub zoom: f32,
 }
 
 pub fn path() -> PathBuf {
@@ -118,8 +131,8 @@ mod tests {
     #[test]
     fn json_round_trip() {
         let s = State {
-            gimbal: None,
             exposure_mode: Some(ExposureMode::Face),
+            ..State::default()
         };
         let back: State = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
         assert_eq!(s, back);

@@ -108,6 +108,30 @@ pub fn recall(slot: u8, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     Ok(frame(RECEIVER, 0x39c4, &data, seq))
 }
 
+/// Start pose (initial state, applied at power-on): `source` 3 = own pose, 0-2 = preset slot.
+/// Degrees and zoom factor as for presets (user tilt, positive up, flipped on the wire).
+pub fn startup_pose(source: u32, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !(pose.pan.is_finite() && pose.tilt.is_finite() && (1.0..=4.0).contains(&pose.zoom)) {
+        return Err(Error::Invalid(
+            "start pose needs finite pan/tilt and zoom 1.0-4.0".into(),
+        ));
+    }
+    let mut data = source.to_le_bytes().to_vec();
+    for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, 0.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(frame(RECEIVER, 0x3ec4, &data, seq))
+}
+
+/// Picture settings of the initial state with every group "not set", as in capture 08.
+pub fn startup_picture_settings(seq: u16) -> [u8; FRAME_SIZE] {
+    let mut data = [0u8; 40];
+    data[0..8].copy_from_slice(&[0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    data[8..16].copy_from_slice(&[0x80, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    data[20..24].copy_from_slice(&[0xff; 4]);
+    frame(RECEIVER, 0x3e44, &data, seq)
+}
+
 /// Occupied slots from a selector-0x0c read: count, then the slot indices.
 pub fn parse_slots(block: &[u8]) -> Vec<u8> {
     let count = block.first().copied().unwrap_or(0) as usize;
@@ -219,6 +243,34 @@ mod tests {
         assert_captured(
             c,
             "aa256b010c00257e0a04843d2c002a5f00000000feffffffffffffff80ffffffffffffff00000000ffffffff00ffffffffffffffff00000000000000",
+        );
+    }
+
+    #[test]
+    fn startup_matches_capture() {
+        // capture 08 (own pose: pan -3, wire pitch -17.1) and capture 10 (preset 0's pose)
+        let pose = Pose {
+            pan: -3.0,
+            tilt: 17.1,
+            zoom: 1.0,
+        };
+        assert_captured(
+            startup_pose(3, pose, 129).unwrap(),
+            "aa2581000c007d590a04c43e1800179f03000000000040c0cdcc88c1000000000000803f",
+        );
+        let pose = Pose {
+            pan: f32::from_bits(0x3f666667),
+            tilt: 0.2,
+            zoom: 1.0,
+        };
+        assert_captured(
+            startup_pose(0, pose, 359).unwrap(),
+            "aa2567010c0094800a04c43e18002d47000000006766663fcdcc4cbe000000000000803f",
+        );
+        assert!(startup_pose(3, Pose { zoom: 5.0, ..pose }, 0).is_err());
+        assert_captured(
+            startup_picture_settings(130),
+            "aa2582000c00ec960a04443e28004dd4feffffffffffffff80ffffffffffffff00000000ffffffff",
         );
     }
 
