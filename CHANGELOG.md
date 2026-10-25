@@ -3,6 +3,17 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-10-25
+
+### Fixed
+
+- `streaming` missed the most common streamers: the DMS widget's Qt Multimedia preview holds
+  the node open without mapping it, and Chrome captures in a sandboxed process whose `/proc`
+  entries are unreadable. `streaming` now asks the kernel (`VIDIOC_REQBUFS` with count 0
+  fails with `EBUSY` while another handle owns the capture buffers), which sees every
+  application. `streaming_apps` stays the best-effort `/proc` list and can be empty while
+  `streaming` is true.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

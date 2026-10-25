@@ -108,7 +108,7 @@ pub struct FullStatus {
     pub model: Option<&'static str>,
     /// V4L2 node the camera streams from (stable by-id path when available); null like `model`.
     pub device: Option<String>,
-    /// Whether an application is streaming from the camera (see `streaming::streaming_apps`).
+    /// Whether an application is streaming from the camera (kernel probe, see `streaming::is_streaming`).
     pub streaming: bool,
     /// `comm` names of those applications, sorted; empty when none.
     pub streaming_apps: Vec<String>,
@@ -244,7 +244,7 @@ impl Camera {
         Ok(FullStatus {
             model: Some(detected.model.name),
             device: Some(detected.device.to_string_lossy().into_owned()),
-            streaming: !streaming_apps.is_empty(),
+            streaming: streaming::is_streaming(&detected.device),
             streaming_apps,
             available: true,
             status,

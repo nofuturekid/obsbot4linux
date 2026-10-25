@@ -1,16 +1,73 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Which applications stream from the camera.
+//! Whether and which applications stream from the camera.
 //!
-//! The USB alternate setting does not tell (the camera streams in bulk mode). A process that
-//! streams from a V4L2 node has it open and mmaps its buffers, so the node shows up in
-//! `/proc/<pid>/maps`; a process that only holds the node open (a control panel) does not
-//! map it. Capture through DMABUF or userptr buffers maps nothing and is not seen, and
-//! neither are processes of other users (their `/proc` entries are unreadable).
+//! The USB alternate setting does not tell (the camera streams in bulk mode).
+//!
+//! `is_streaming` asks the kernel: uvcvideo lets one handle own the capture buffers, so
+//! `VIDIOC_REQBUFS` with count 0 fails with `EBUSY` while another handle streams. That sees
+//! every application, also sandboxed ones (Chrome) and ones that never map the node.
+//!
+//! `streaming_apps` names the applications, best effort from `/proc`: a process that streams
+//! has the node open and mmaps its buffers, so it shows up in `/proc/<pid>/maps`; a process
+//! that only holds the node open (a control panel) does not map it. Capture through DMABUF or
+//! userptr buffers maps nothing, and processes of other users or in a sandbox are unreadable,
+//! so the list can be empty while `is_streaming` is true.
 
+use nix::errno::Errno;
+use nix::ioctl_readwrite;
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+
+const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
+const V4L2_MEMORY_MMAP: u32 = 1;
+
+/// `struct v4l2_requestbuffers`.
+#[repr(C)]
+#[derive(Default)]
+struct V4l2RequestBuffers {
+    count: u32,
+    type_: u32,
+    memory: u32,
+    capabilities: u32,
+    flags: u8,
+    reserved: [u8; 3],
+}
+
+ioctl_readwrite!(vidioc_reqbufs, b'V', 8, V4l2RequestBuffers);
+
+/// Maps the result of the REQBUFS probe: only `EBUSY` means another handle owns the buffers.
+fn busy(result: Result<(), Errno>) -> bool {
+    result == Err(Errno::EBUSY)
+}
+
+/// Whether an application streams from `device` (a `/dev/videoN` path or a symlink to it).
+///
+/// Opens the real node and asks for zero buffers, then closes it at once. While nobody streams
+/// this takes the buffer queue for that moment (count 0 releases it again). Every error other
+/// than `EBUSY` (no access, no such node, no buffer support) counts as not streaming; the
+/// project has no logging, so they are not reported.
+pub fn is_streaming(device: &Path) -> bool {
+    let node = fs::canonicalize(device).unwrap_or_else(|_| device.to_path_buf());
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(&node)
+    {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut req = V4l2RequestBuffers {
+        type_: V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        memory: V4L2_MEMORY_MMAP,
+        ..Default::default()
+    };
+    busy(unsafe { vidioc_reqbufs(file.as_raw_fd(), &mut req) }.map(drop))
+}
 
 /// `comm` names (sorted, deduplicated) of the processes under `proc_root` that have `node`
 /// open and mapped. `node` must be the resolved `/dev/videoN` path; `own_pid` is skipped.
@@ -110,6 +167,20 @@ mod tests {
 
     fn apps(fake: &Fake) -> Vec<String> {
         streaming_apps(&fake.0, Path::new(NODE), 1)
+    }
+
+    #[test]
+    fn only_ebusy_means_streaming() {
+        assert!(busy(Err(Errno::EBUSY)));
+        assert!(!busy(Ok(())));
+        for e in [Errno::EINVAL, Errno::ENOTTY, Errno::EACCES, Errno::ENODEV] {
+            assert!(!busy(Err(e)), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_missing_node_is_not_streaming() {
+        assert!(!is_streaming(Path::new("/nonexistent/video99")));
     }
 
     #[test]

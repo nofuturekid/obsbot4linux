@@ -134,8 +134,8 @@ impl Worker {
             }
         }
         if let Some(device) = last["device"].as_str() {
+            let streaming = json!(streaming::is_streaming(Path::new(device)));
             let apps = streaming::apps_using(Path::new(device));
-            let streaming = json!(!apps.is_empty());
             let apps = json!(apps);
             if last["streaming"] != streaming || last["streaming_apps"] != apps {
                 last["streaming"] = streaming;

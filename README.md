@@ -73,12 +73,19 @@ event as soon as they change; no camera command is involved.
 {"model": "Tiny 2 Lite", "streaming": true, "streaming_apps": ["ffmpeg"], "...": "..."}
 ```
 
-The USB alternate setting does not show streaming (the camera uses bulk transfer), so
-obsbot4linux looks at `/proc`: a process that streams has the camera's `/dev/videoN` open
-and has mapped its buffers (the node appears in `/proc/<pid>/maps`). A process that only holds
-the node open, like a control panel, is not counted. Limits: only mmap-based capture is seen
-(DMABUF or userptr-only capture is not), processes of other users are not readable and so not
-seen, and obsbot4linux's own process is left out.
+`streaming` is the reliable one and comes from the kernel. uvcvideo lets only one handle own
+the capture buffers, so obsbot4linux opens the video node and requests zero buffers
+(`VIDIOC_REQBUFS`, count 0); `EBUSY` means some application streams. This sees every
+application, also sandboxed ones like Chrome and ones that do not map the node like Qt
+Multimedia. While nobody streams, the probe owns the buffer queue for a moment and releases it
+at once; it does not disturb a running stream. Any other error counts as not streaming.
+
+`streaming_apps` is best effort, only for names: a process that streams has the camera's
+`/dev/videoN` open and has mapped its buffers (the node appears in `/proc/<pid>/maps`). A
+process that only holds the node open, like a control panel, is not listed. Limits: only
+mmap-based capture is seen, processes of other users and sandboxed processes are not readable,
+and obsbot4linux's own process is left out. So the list can be empty while `streaming` is
+`true`; trust `streaming` for "is the camera in use".
 
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist
