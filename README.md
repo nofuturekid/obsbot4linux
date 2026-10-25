@@ -37,7 +37,7 @@ mode) the daemon remembers.
 
 ## Status
 
-Local only. The `obsbot4linux` CLI (library plus binary) controls the camera directly, with
+The `obsbot4linux` CLI (library plus binary) controls the camera directly, with
 `--json` for every command, and `obsbot4linux daemon` / `obsbot4linux watch` implement the
 design above (JSON lines over `$XDG_RUNTIME_DIR/obsbot4linux.sock`, override with
 `OBSBOT4LINUX_SOCKET`). The DMS widget uses `obsbot4linux watch` only. Other models would
@@ -47,15 +47,34 @@ Builds on the Tiny 2 Lite support written for
 
 ## Install
 
-Arch Linux, from this checkout:
+Download a package from the
+[releases](https://github.com/nofuturekid/obsbot4linux/releases) (x86_64 and aarch64;
+`SHA256SUMS` lists the checksums), then install it:
 
 ```sh
-cd packaging/arch && makepkg -si
+sudo apt install ./obsbot4linux_0.1.0_amd64.deb              # Debian, Ubuntu (arm64 too)
+sudo dnf install ./obsbot4linux-0.1.0-1.x86_64.rpm           # Fedora, openSUSE: zypper install
+sudo pacman -U obsbot4linux-0.1.0-1-x86_64.pkg.tar.zst       # Arch Linux, Arch Linux ARM (aarch64)
+tar -xzf obsbot4linux-0.1.0-x86_64-linux.tar.gz              # tarball: binary + systemd/ units
+```
+
+The packages install `/usr/bin/obsbot4linux` and the user units, and do not enable
+anything. Enable the socket:
+
+```sh
 systemctl --user enable --now obsbot4linux.socket
 ```
 
 The socket starts `obsbot4linux.service` on the first connection. Without the
-units, `obsbot4linux watch` starts a daemon itself.
+units, `obsbot4linux watch` starts a daemon itself. From the tarball, put the
+binary on your `PATH` and copy `systemd/*` to `~/.config/systemd/user/`.
+
+Build from source (Rust 1.85 or newer):
+
+```sh
+cargo build --release --locked      # target/release/obsbot4linux
+cd packaging/arch && makepkg -si    # Arch package of this checkout
+```
 
 ## Licence
 

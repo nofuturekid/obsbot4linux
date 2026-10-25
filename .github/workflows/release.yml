@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Fails at once unless Cargo.toml and CHANGELOG.md match the tag.
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: scripts/changelog-section.sh "$GITHUB_REF_NAME" > /dev/null
+
+  test:
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+      - run: cargo test --locked
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+            deb: amd64
+            # Arch Linux, daily image, pinned by digest (x86_64 only)
+            arch_image: archlinux/archlinux@sha256:846dcf08b36edc8e4247e6abd622936f20dd620aae1f7fdfdc146a6b4e86e628
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+            deb: arm64
+            # Arch Linux ARM (menci/archlinuxarm, daily multi-arch), pinned by digest
+            arch_image: menci/archlinuxarm@sha256:0a4663459ee538d31c7f2fc496f32dfc3f87d1c134141ecded15f2e1d04b00ce
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+      - run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
+      - run: sudo apt-get install -y --no-install-recommends dpkg-dev
+      - run: cargo build --release --locked
+      - name: Build packages
+        env:
+          ARCH: ${{ matrix.arch }}
+          DEB: ${{ matrix.deb }}
+        run: |
+          ver=${GITHUB_REF_NAME#v}
+          mkdir dist
+          # tarball
+          dir=obsbot4linux-$ver-$ARCH-linux
+          mkdir -p "$dir/systemd"
+          cp target/release/obsbot4linux README.md CHANGELOG.md LICENSE "$dir"
+          cp packaging/systemd/* "$dir/systemd"
+          tar -czf "dist/$dir.tar.gz" "$dir"
+          cargo deb --no-build --deb-revision "" -o "dist/obsbot4linux_${ver}_$DEB.deb"
+          cargo generate-rpm -o "dist/obsbot4linux-$ver-1.$ARCH.rpm"
+      - name: Build Arch package
+        env:
+          ARCH_IMAGE: ${{ matrix.arch_image }}
+        run: scripts/build-arch.sh "$ARCH_IMAGE" "${GITHUB_REF_NAME#v}" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/changelog-section.sh "$GITHUB_REF_NAME" > notes.md
+          (cd dist && sha256sum obsbot4linux* > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md dist/*

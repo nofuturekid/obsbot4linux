@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+      - run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+      - run: cargo test --locked
+
+  # The one check the main ruleset requires.
+  required:
+    if: always()
+    needs: [fmt, clippy, test]
+    runs-on: ubuntu-22.04
+    steps:
+      - run: test "${{ join(needs.*.result, ' ') }}" = "success success success"
