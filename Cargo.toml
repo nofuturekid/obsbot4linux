@@ -1,6 +1,6 @@
 [package]
 name = "obsbot4linux"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Control OBSBOT webcams on Linux from the console, with a daemon for the DMS widget"
 authors = ["Thomas Kroll"]
