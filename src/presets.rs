@@ -126,16 +126,25 @@ pub fn startup_pose(source: u32, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE
 /// Zone return position (`0x4e84`): index 0, then the preset layout with a 0 in place of the
 /// last value. Degrees and zoom factor as for presets (tilt positive up here, flipped on the wire).
 pub fn zone_return_set(pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    return_set(0x4e84, pose, seq)
+}
+
+/// Hand-tracking return position (`0x24c4`): the same layout as [`zone_return_set`].
+pub fn hand_return_set(pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    return_set(0x24c4, pose, seq)
+}
+
+fn return_set(command: u16, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     if !(pose.pan.is_finite() && pose.tilt.is_finite() && (1.0..=4.0).contains(&pose.zoom)) {
         return Err(Error::Invalid(
-            "zone return position needs finite pan/tilt and zoom 1.0-4.0".into(),
+            "return position needs finite pan/tilt and zoom 1.0-4.0".into(),
         ));
     }
     let mut data = 0u32.to_le_bytes().to_vec();
     for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, 0.0] {
         data.extend_from_slice(&v.to_le_bytes());
     }
-    Ok(frame(0x04, 0x4e84, &data, seq))
+    Ok(frame(0x04, command, &data, seq))
 }
 
 /// Decodes the 24-byte pose of the readbacks `0x4ec4` (zone return position) and `0x3884`
@@ -305,6 +314,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn hand_return_set_uses_the_zone_layout_with_its_own_command() {
+        // measured: pan 20.1, tilt 4.9 up, zoom 1 read back from 0x2504 as sent
+        let pose = Pose {
+            pan: 20.0,
+            tilt: 5.0,
+            zoom: 1.0,
+        };
+        let hand = hand_return_set(pose, 7).unwrap();
+        let zone = zone_return_set(pose, 7).unwrap();
+        assert_eq!(hand[10..12], [0xc4, 0x24]);
+        assert_eq!(hand[16..40], zone[16..40]);
+        assert!(hand_return_set(Pose { zoom: 5.0, ..pose }, 0).is_err());
+    }
+
+    #[test]
+    fn unset_hand_return_reads_as_minus_one() {
+        // 0x2504 while none is set (capture 11): leading -1, pan 0, tilt 0, zoom 1
+        let (lead, p) =
+            parse_pose(&hex::decode("ffffffff0000000000000000000000000000803f00000000").unwrap())
+                .unwrap();
+        assert_eq!(lead, u32::MAX);
+        assert_eq!((p.pan, p.tilt, p.zoom), (0.0, 0.0, 1.0));
     }
 
     #[test]

@@ -221,6 +221,14 @@ pub fn startup_go(seq: u16) -> [u8; FRAME_SIZE] {
 pub fn zone_return_go(seq: u16) -> [u8; FRAME_SIZE] {
     frame(TRACKING, 0x4f44, &[], seq)
 }
+/// Moves the gimbal to the hand-tracking return position (`aiTrgHandTrackInitPosR`, no data).
+pub fn hand_return_go(seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x2584, &[], seq)
+}
+/// Clears the hand-tracking return position (`aiRstHandTrackInitPosR`, no data).
+pub fn hand_return_reset(seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x2544, &[], seq)
+}
 /// Autofocus mode: face (true) or global (false). Receiver 2, u32 (capture 12).
 pub fn autofocus_mode(face: bool, seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0x3602, &(face as u32).to_le_bytes(), seq)
@@ -364,6 +372,19 @@ mod tests {
         assert_captured(frames[2], "aa25b0010c0030160a04044d04003b970000f0c1");
         assert_captured(frames[3], "aa25b1010c0000130a04844d04003a370000f041");
         assert_captured(startup_go(56), "aa2538000c00bba30a040439010027ff01");
+    }
+
+    #[test]
+    fn hand_return_go_and_reset_have_no_data() {
+        for (f, command) in [
+            (hand_return_go(9), 0x2584u16),
+            (hand_return_reset(9), 0x2544),
+        ] {
+            assert_eq!(f[0..2], [0xaa, 0x25]);
+            assert_eq!(f[10..12], command.to_le_bytes());
+            assert_eq!(f[12..14], [0, 0], "data length 0");
+            assert!(f[16..].iter().all(|b| *b == 0));
+        }
     }
 
     #[test]

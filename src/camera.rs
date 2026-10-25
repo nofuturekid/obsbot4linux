@@ -46,6 +46,7 @@ pub const CAPABILITIES: &[&str] = &[
     "zone",
     "zone_follow",
     "zone_return",
+    "hand_return",
     "focus",
     "startup",
     "image",
@@ -129,6 +130,8 @@ pub struct FullStatus {
     /// Zone tracking area, follow and return position read from the camera; None when it did not
     /// answer the queries.
     pub zone: Option<Zone>,
+    /// Hand tracking area and return position read from the camera; None when it did not answer.
+    pub hand: Option<Hand>,
     pub capabilities: Vec<&'static str>,
 }
 
@@ -158,10 +161,30 @@ pub struct Zone {
     pub return_pose: Pose,
 }
 
+/// Hand tracking settings as the camera reports them, in obsbot4linux's angles (pan positive =
+/// camera left, tilt positive = up).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Hand {
+    pub area: HandArea,
+    /// Where the camera goes after the hand leaves the tracking range; None while none is set.
+    #[serde(rename = "return")]
+    pub return_pose: Option<Pose>,
+}
+
+/// The angles around the camera's centre in which a hand is tracked.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HandArea {
+    pub pan_min: f32,
+    pub pan_max: f32,
+    pub tilt_min: f32,
+    pub tilt_max: f32,
+}
+
 /// The rarely changing readbacks; the daemon keeps them between full reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZoneInfo {
     pub zone: Option<Zone>,
+    pub hand: Option<Hand>,
     pub startup: Option<Startup>,
 }
 
@@ -305,6 +328,31 @@ impl Camera {
         })
     }
 
+    /// Queries `0x2004` (hand area: four f32, yaw min / max, pitch min / max; pitch is positive
+    /// down, so min and max swap and flip like for the zone) and `0x2504` (return position, leading
+    /// `i32` -1 while none is set). Both are queries OBSBOT Center sends to this camera.
+    pub fn hand(&self) -> Result<Hand> {
+        let area = self.query(0x2004)?;
+        let float = |i: usize| -> Result<f32> {
+            area.get(i * 4..i * 4 + 4)
+                .and_then(|s| s.try_into().ok())
+                .map(f32::from_le_bytes)
+                .filter(|v| v.is_finite())
+                .ok_or(Error::NoAnswer(0x2004))
+        };
+        let (lead, pose) =
+            presets::parse_pose(&self.query(0x2504)?).ok_or(Error::NoAnswer(0x2504))?;
+        Ok(Hand {
+            area: HandArea {
+                pan_min: float(0)?,
+                pan_max: float(1)?,
+                tilt_min: -float(3)? + 0.0,
+                tilt_max: -float(2)? + 0.0,
+            },
+            return_pose: (lead != u32::MAX).then_some(pose),
+        })
+    }
+
     /// Query `0x3884`: the start pose of the initial state. The leading number is 0-2 for a
     /// preset slot and 3 for an own pose.
     pub fn startup(&self) -> Result<Startup> {
@@ -321,6 +369,7 @@ impl Camera {
     pub fn zone_info(&self) -> ZoneInfo {
         ZoneInfo {
             zone: self.zone().ok(),
+            hand: self.hand().ok(),
             startup: self.startup().ok(),
         }
     }
@@ -346,7 +395,11 @@ impl Camera {
         } else {
             self.target().ok().flatten()
         };
-        let ZoneInfo { zone, startup } = known.unwrap_or_else(|| self.zone_info());
+        let ZoneInfo {
+            zone,
+            hand,
+            startup,
+        } = known.unwrap_or_else(|| self.zone_info());
         Ok(FullStatus {
             model: Some(detected.model.name),
             device: Some(detected.device.to_string_lossy().into_owned()),
@@ -365,6 +418,7 @@ impl Camera {
                 startup,
             },
             zone,
+            hand,
             capabilities: CAPABILITIES.to_vec(),
         })
     }
@@ -468,6 +522,28 @@ impl Camera {
         };
         self.framed(&presets::zone_return_set(pose, self.seq.next())?)?;
         Ok(pose)
+    }
+
+    /// Sets the current pose as the hand-tracking return position and returns it.
+    pub fn set_hand_return_here(&self) -> Result<Pose> {
+        let live = self.live_pose()?;
+        let pose = Pose {
+            pan: live.pan as f32,
+            tilt: live.tilt as f32 + 0.0, // no -0
+            zoom: self.zoom_factor()?.clamp(1.0, MAX_ZOOM),
+        };
+        self.framed(&presets::hand_return_set(pose, self.seq.next())?)?;
+        Ok(pose)
+    }
+
+    /// Moves the gimbal to the hand-tracking return position.
+    pub fn hand_return_go(&self) -> Result<()> {
+        self.framed(&cmd::hand_return_go(self.seq.next()))
+    }
+
+    /// Clears the hand-tracking return position.
+    pub fn hand_return_reset(&self) -> Result<()> {
+        self.framed(&cmd::hand_return_reset(self.seq.next()))
     }
 
     /// Moves the gimbal to the zone return position.
@@ -706,6 +782,31 @@ impl Camera {
 #[cfg(test)]
 mod full_status_tests {
     #[test]
+    fn hand_serialises_area_and_a_null_return() {
+        let mut h = Hand {
+            area: HandArea {
+                pan_min: -45.0,
+                pan_max: 45.0,
+                tilt_min: -30.0,
+                tilt_max: 30.0,
+            },
+            return_pose: None,
+        };
+        let v = serde_json::to_value(&h).unwrap();
+        assert_eq!(v["area"]["tilt_max"], 30.0);
+        assert!(v["return"].is_null(), "no return position set");
+        h.return_pose = Some(Pose {
+            pan: 20.0,
+            tilt: 5.0,
+            zoom: 1.0,
+        });
+        assert_eq!(
+            serde_json::to_value(h).unwrap()["return"],
+            serde_json::json!({"pan": 20.0, "tilt": 5.0, "zoom": 1.0})
+        );
+    }
+
+    #[test]
     fn zone_serialises_with_return_as_key() {
         let z = Zone {
             pan_min: -10.0,
@@ -751,6 +852,7 @@ mod full_status_tests {
                 startup: None,
             },
             zone: None,
+            hand: None,
             capabilities: CAPABILITIES.to_vec(),
         };
         let v = serde_json::to_value(full).unwrap();
@@ -761,7 +863,7 @@ mod full_status_tests {
         assert!(v["target"].is_null());
         // zone_follow stays under state, next to the remembered values
         assert_eq!(v["state"]["zone_follow"], true);
-        assert!(v["state"]["startup"].is_null() && v["zone"].is_null());
+        assert!(v["state"]["startup"].is_null() && v["zone"].is_null() && v["hand"].is_null());
         let t = Target {
             detected: true,
             coords: [0.25, 0.5, 0.75, 1.0],

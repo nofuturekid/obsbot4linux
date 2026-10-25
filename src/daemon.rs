@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 const TICK: Duration = Duration::from_secs(1);
 /// The 0x0104 / zoom queries and the image controls are read at least this often.
 const FULL_EVERY: Duration = Duration::from_secs(5);
-/// The zone and start pose readbacks (seven queries) change only by a command, so they are asked
+/// The zone, hand and start pose readbacks (nine queries) change only by a command, so they are asked
 /// again after one of ours and otherwise this often, to notice changes made with OBSBOT Center.
 const ZONE_EVERY: Duration = Duration::from_secs(60);
 
@@ -73,7 +73,7 @@ struct Worker {
     /// Last full state seen from the camera (None while it is unavailable).
     last: Option<Value>,
     last_full: Instant,
-    /// Zone and start pose readbacks with the time they were read; dropped after a command.
+    /// Zone, hand and start pose readbacks with the time they were read; dropped after a command.
     zone: Option<(ZoneInfo, Instant)>,
     dirty: bool,
     /// Whether the last poll found the camera; None before the first one.
@@ -92,6 +92,7 @@ impl Worker {
         if !reused {
             let info = ZoneInfo {
                 zone: full.zone.clone(),
+                hand: full.hand.clone(),
                 startup: full.state.startup,
             };
             self.zone = Some((info, Instant::now()));

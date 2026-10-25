@@ -29,6 +29,20 @@ pub struct Cli {
     pub command: Cmd,
 }
 
+#[derive(Subcommand)]
+pub enum HandCmd {
+    /// Track the right hand
+    Right,
+    /// Track the left hand
+    Left,
+    /// Take the current camera pose as the position the camera returns to after the hand leaves
+    ReturnHere,
+    /// Move the camera to the hand-tracking return position
+    ReturnGo,
+    /// Clear the hand-tracking return position
+    ReturnReset,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum OnOff {
     On,
@@ -98,8 +112,9 @@ pub enum Cmd {
     /// Gesture control
     #[command(subcommand)]
     Gesture(GestureCmd),
-    /// Hand tracking: which hand
-    Hand { side: HandSide },
+    /// Hand tracking: which hand, return position
+    #[command(subcommand)]
+    Hand(HandCmd),
     /// Zone tracking
     #[command(subcommand)]
     Zone(ZoneCmd),
@@ -379,9 +394,26 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
                 .set_gesture_zoom_ratio(ratio)
                 .and_then(|_| done("gesture_zoom_ratio", json!(ratio))),
         },
-        Cmd::Hand { side } => cam
-            .set_hand_side(side)
-            .and_then(|_| done("hand", value_name(side))),
+        Cmd::Hand(h) => match h {
+            HandCmd::Right | HandCmd::Left => {
+                let side = if matches!(h, HandCmd::Left) {
+                    HandSide::Left
+                } else {
+                    HandSide::Right
+                };
+                cam.set_hand_side(side)
+                    .and_then(|_| done("hand", value_name(side)))
+            }
+            HandCmd::ReturnHere => cam
+                .set_hand_return_here()
+                .and_then(|pose| done("hand_return", json!({"pose": pose}))),
+            HandCmd::ReturnGo => cam
+                .hand_return_go()
+                .and_then(|_| done("hand_return_go", Value::Null)),
+            HandCmd::ReturnReset => cam
+                .hand_return_reset()
+                .and_then(|_| done("hand_return_reset", Value::Null)),
+        },
         Cmd::Zone(z) => match z {
             ZoneCmd::On | ZoneCmd::Off => {
                 let on = matches!(z, ZoneCmd::On);

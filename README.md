@@ -130,6 +130,31 @@ preset slot the start pose was taken from, `null` for an own pose.
 The daemon reads these seven values at start, after each command and then once a minute, not with
 every poll. Capability: `zone_return`.
 
+### Hand tracking return position
+
+The camera has its own return position for hand tracking, where the gimbal goes once the hand has
+left the tracking range. It and the hand area are read from the camera (queries `0x2504` and
+`0x2004`) and appear next to `zone`, in the same angles (pan positive = camera left, tilt
+positive = up):
+
+```json
+{"hand": {"area": {"pan_min": -45.0, "pan_max": 45.0, "tilt_min": -30.0, "tilt_max": 30.0},
+          "return": {"pan": 20.1, "tilt": 4.9, "zoom": 1.0}}}
+```
+
+`return` is `null` while none is set, and `hand` is `null` when the camera does not answer. The
+area is only read; obsbot4linux has no command to change it (the camera's default is 45 degrees to
+each side and 30 up and down).
+
+- `hand return-here` stores the current pose (queries `0x6604` and `0x6804`) with `0x24c4`.
+- `hand return-go` moves the camera to the stored position (`0x2584`). With none set, the camera
+  goes to pan 0, tilt 0.
+- `hand return-reset` clears it (`0x2544`); `return` is `null` again.
+- `hand left` and `hand right` choose the tracked hand as before.
+
+The daemon reads the two values together with the zone values (see above). Capability:
+`hand_return`.
+
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist
 for the Tiny 2 Lite only; the plan is one module per model behind the same commands, once a
