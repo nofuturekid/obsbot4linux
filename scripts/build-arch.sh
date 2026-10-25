@@ -19,7 +19,7 @@ sed -i "s/^pkgver=.*/pkgver=$ver/" "$work/PKGBUILD"
 chmod -R a+rwX "$work"
 
 docker run --rm -v "$work:/work" -e VER="$ver" "$image" sh -ec '
-  pacman -Syu --noconfirm --needed cargo
+  pacman -Syu --noconfirm --needed --disable-sandbox cargo
   useradd -m builder
   chown -R builder /work
   su builder -c "cd /work && OBSBOT4LINUX_TARBALL=/work/obsbot4linux-$VER.tar.gz PKGDEST=/work/out makepkg --noconfirm"
