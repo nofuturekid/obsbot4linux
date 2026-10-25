@@ -9,6 +9,7 @@ url='https://github.com/nofuturekid/obsbot4linux'
 license=('GPL-3.0-or-later')
 depends=('gcc-libs' 'glibc')
 makedepends=('cargo')
+options=('!debug')
 
 if [[ -n ${OBSBOT4LINUX_TARBALL:-} ]]; then
   source=("$pkgname-$pkgver.tar.gz::file://$OBSBOT4LINUX_TARBALL")
