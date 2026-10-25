@@ -1,5 +1,5 @@
 [package]
-name = "tiny2lite4linux"
+name = "obsbot4linux"
 version = "0.1.0"
 edition = "2024"
 description = "Control the OBSBOT Tiny 2 Lite webcam on Linux"
