@@ -3,6 +3,19 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-10-25
+
+### Added
+
+- `model` and `device` keys in `obsbot4linux --json status` and in the daemon's state
+  events (`obsbot4linux watch`): the camera's human name and the V4L2 node to stream from
+  (the stable `/dev/v4l/by-id/...-video-index0` link when available). Both are `null`
+  while no camera is connected; all existing keys are unchanged.
+- `obsbot4linux detect`: exit 0 and the model (`--json`: `{model, device}`) when a supported
+  camera is connected, exit 1 without output when not. Enumeration only, no daemon and no
+  camera command.
+- "Supported cameras" section in the README.
+
 ## [0.1.0] - 2026-10-25
 
 ### Added

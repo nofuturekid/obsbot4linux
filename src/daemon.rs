@@ -34,14 +34,14 @@ fn run_request(args: &[String]) -> std::result::Result<(Value, String), String> 
         std::iter::once("obsbot4linux".to_string()).chain(args.iter().cloned()),
     )
     .map_err(|e| e.to_string())?;
-    if matches!(cli.command, Cmd::Daemon | Cmd::Watch) {
-        return Err("daemon and watch cannot be run through the daemon".into());
+    if matches!(cli.command, Cmd::Daemon | Cmd::Watch | Cmd::Detect) {
+        return Err("daemon, watch and detect cannot be run through the daemon".into());
     }
     execute(cli.command).map_err(|e| e.to_string())
 }
 
 fn unavailable() -> Value {
-    json!({"available": false, "capabilities": CAPABILITIES})
+    json!({"available": false, "model": null, "device": null, "capabilities": CAPABILITIES})
 }
 
 /// Differences in these auto-adjusted controls are not a change worth a broadcast.
@@ -278,4 +278,18 @@ pub fn run() -> Result<()> {
         std::thread::spawn(move || serve_client(stream, hub, tx));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_state_has_null_model_and_device() {
+        let v = unavailable();
+        assert_eq!(v["available"], false);
+        assert!(v["model"].is_null() && v["device"].is_null());
+        assert!(v.as_object().unwrap().contains_key("model"));
+        assert!(v.as_object().unwrap().contains_key("device"));
+    }
 }

@@ -45,6 +45,28 @@ each get a module behind the same commands once one is at hand to capture and te
 Builds on the Tiny 2 Lite support written for
 [Tiny4Linux](https://github.com/OpenFoxes/Tiny4Linux) (EUPL-1.2).
 
+## Supported cameras
+
+| Model | USB id | Status |
+| --- | --- | --- |
+| OBSBOT Tiny 2 Lite | `3564:fef9` | Full support, tested on firmware 6.2.8.1 |
+
+Detection only enumerates (`/dev/v4l/by-id`, else the V4L2 card name) and sends nothing to the
+camera. Two ways to use it:
+
+- `obsbot4linux detect` exits 0 and prints the model when a supported camera is connected,
+  exits 1 with no output when not. It does not start or ask the daemon, so it is cheap enough
+  to call every few seconds. `--json` prints `{"model":"Tiny 2 Lite","device":"/dev/v4l/by-id/...-video-index0"}`.
+- `obsbot4linux --json status` and the state events of `obsbot4linux watch` carry two top-level
+  keys: `model` (the human name) and `device` (the V4L2 node to stream from, the stable
+  `/dev/v4l/by-id/...-video-index0` link when there is one, else `/dev/videoN`). Both are
+  `null` while no camera is connected.
+
+Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
+patterns) makes it detected. Its commands and status decoding differ per camera and today exist
+for the Tiny 2 Lite only; the plan is one module per model behind the same commands, once a
+camera is at hand to capture and test (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
 ## Install
 
 Download a package from the

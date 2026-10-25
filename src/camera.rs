@@ -103,6 +103,10 @@ pub struct LivePose {
 
 #[derive(Debug, Serialize)]
 pub struct FullStatus {
+    /// Human name of the camera model, e.g. "Tiny 2 Lite"; null while no camera is connected.
+    pub model: Option<&'static str>,
+    /// V4L2 node the camera streams from (stable by-id path when available); null like `model`.
+    pub device: Option<String>,
     /// Always true here; the daemon reports false when the camera is gone.
     pub available: bool,
     pub status: Status,
@@ -230,7 +234,10 @@ impl Camera {
         };
         let factor = self.zoom_factor().ok();
         let absolute = self.dev.get_ctrl(ZOOM_ABSOLUTE).ok();
+        let detected = self.dev.detected();
         Ok(FullStatus {
+            model: Some(detected.model.name),
+            device: Some(detected.device.to_string_lossy().into_owned()),
             available: true,
             status,
             tracking,
@@ -571,5 +578,35 @@ impl Camera {
             }
             .save(),
         }
+    }
+}
+
+#[cfg(test)]
+mod full_status_tests {
+    use super::*;
+
+    #[test]
+    fn model_and_device_are_top_level_keys() {
+        let full = FullStatus {
+            model: Some("Tiny 2 Lite"),
+            device: Some("/dev/v4l/by-id/x-video-index0".into()),
+            available: true,
+            status: Status::decode(&[0; 60]),
+            tracking: None,
+            zoom: Zoom {
+                factor: None,
+                absolute: None,
+            },
+            pose: None,
+            image: BTreeMap::new(),
+            state: State::default(),
+            capabilities: CAPABILITIES.to_vec(),
+        };
+        let v = serde_json::to_value(full).unwrap();
+        assert_eq!(v["model"], "Tiny 2 Lite");
+        assert_eq!(v["device"], "/dev/v4l/by-id/x-video-index0");
+        // the keys the widget already reads stay where they were
+        assert_eq!(v["available"], true);
+        assert!(v["status"].is_object() && v["capabilities"].is_array());
     }
 }

@@ -7,6 +7,7 @@
 //! working: control ioctls do not need exclusive access.
 
 use crate::error::{Error, Result};
+use crate::models::{self, Model};
 use nix::{ioctl_read, ioctl_readwrite};
 use std::fs::{self, File};
 use std::os::fd::AsRawFd;
@@ -79,7 +80,19 @@ pub struct CtrlRange {
     pub default: i32,
 }
 
-pub struct Device(File);
+/// A camera found by enumeration, before any command is sent to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detected {
+    pub model: &'static Model,
+    /// The V4L2 node to stream from: the stable `/dev/v4l/by-id/...-video-index0` link when
+    /// there is one, else `/dev/videoN`.
+    pub device: PathBuf,
+}
+
+pub struct Device {
+    file: File,
+    detected: Detected,
+}
 
 fn card_name(file: &File) -> Option<(String, u32)> {
     let mut cap = V4l2Capability::default();
@@ -95,42 +108,57 @@ fn card_name(file: &File) -> Option<(String, u32)> {
     ))
 }
 
-impl Device {
-    /// Finds the Tiny 2 Lite: by-id symlink first, V4L2 card name as fallback.
-    pub fn open() -> Result<Self> {
-        let by_id = fs::read_dir("/dev/v4l/by-id")
-            .into_iter()
-            .flatten()
-            .flatten();
-        for entry in by_id {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.contains("OBSBOT_Tiny_2_Lite")
-                && name.ends_with("-video-index0")
-                && let Ok(file) = File::open(entry.path())
-            {
-                return Ok(Self(file));
-            }
+/// Finds a supported camera without talking to it: by-id symlink first, V4L2 card name
+/// (VIDIOC_QUERYCAP, a read-only ioctl) as fallback.
+pub fn detect() -> Option<Detected> {
+    let by_id = fs::read_dir("/dev/v4l/by-id")
+        .into_iter()
+        .flatten()
+        .flatten();
+    for entry in by_id {
+        if let Some(model) = models::from_by_id(&entry.file_name().to_string_lossy()) {
+            return Some(Detected {
+                model,
+                device: entry.path(),
+            });
         }
+    }
 
-        let mut paths: Vec<PathBuf> = fs::read_dir("/dev")?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("video"))
-            })
-            .collect();
-        paths.sort();
-        for path in paths {
-            if let Ok(file) = File::open(&path)
-                && let Some((card, caps)) = card_name(&file)
-                && card.contains("Tiny 2 Lite")
-                && caps & V4L2_CAP_META_CAPTURE == 0
-            {
-                return Ok(Self(file));
-            }
+    let mut paths: Vec<PathBuf> = fs::read_dir("/dev")
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("video"))
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        if let Ok(file) = File::open(&path)
+            && let Some((card, caps)) = card_name(&file)
+            && caps & V4L2_CAP_META_CAPTURE == 0
+            && let Some(model) = models::from_card(&card)
+        {
+            return Some(Detected {
+                model,
+                device: path,
+            });
         }
-        Err(Error::NoCamera)
+    }
+    None
+}
+
+impl Device {
+    /// Opens the first supported camera.
+    pub fn open() -> Result<Self> {
+        let detected = detect().ok_or(Error::NoCamera)?;
+        let file = File::open(&detected.device)?;
+        Ok(Self { file, detected })
+    }
+
+    pub fn detected(&self) -> &Detected {
+        &self.detected
     }
 
     fn xu(&self, selector: u8, query: u8, data: &mut [u8]) -> Result<()> {
@@ -141,7 +169,7 @@ impl Device {
             size: data.len() as u16,
             data: data.as_mut_ptr(),
         };
-        unsafe { uvcioc_ctrl_query(self.0.as_raw_fd(), &mut q) }?;
+        unsafe { uvcioc_ctrl_query(self.file.as_raw_fd(), &mut q) }?;
         Ok(())
     }
 
@@ -182,13 +210,13 @@ impl Device {
 
     pub fn get_ctrl(&self, id: u32) -> Result<i32> {
         let mut c = V4l2Control { id, value: 0 };
-        unsafe { vidioc_g_ctrl(self.0.as_raw_fd(), &mut c) }?;
+        unsafe { vidioc_g_ctrl(self.file.as_raw_fd(), &mut c) }?;
         Ok(c.value)
     }
 
     pub fn set_ctrl(&self, id: u32, value: i32) -> Result<()> {
         let mut c = V4l2Control { id, value };
-        unsafe { vidioc_s_ctrl(self.0.as_raw_fd(), &mut c) }?;
+        unsafe { vidioc_s_ctrl(self.file.as_raw_fd(), &mut c) }?;
         Ok(())
     }
 
@@ -198,7 +226,7 @@ impl Device {
             id,
             ..Default::default()
         };
-        match unsafe { vidioc_queryctrl(self.0.as_raw_fd(), &mut q) } {
+        match unsafe { vidioc_queryctrl(self.file.as_raw_fd(), &mut q) } {
             Ok(_) if q.flags & V4L2_CTRL_FLAG_DISABLED == 0 => Ok(Some(CtrlRange {
                 min: q.minimum,
                 max: q.maximum,

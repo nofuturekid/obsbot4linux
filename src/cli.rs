@@ -7,6 +7,7 @@ use std::io::Write;
 use clap::{Parser, Subcommand, ValueEnum};
 use obsbot4linux::camera::Camera;
 use obsbot4linux::commands::*;
+use obsbot4linux::device::Detected;
 use obsbot4linux::error::{Error, Result};
 use obsbot4linux::presets::Pose;
 use serde_json::{Value, json};
@@ -46,6 +47,9 @@ pub enum Cmd {
     Daemon,
     /// Stream state events as JSON lines and forward JSON requests from stdin (for widgets)
     Watch,
+    /// Exit 0 and print the model (--json: model and video device) when a supported camera is
+    /// connected, exit 1 with no output when not. Enumeration only: no daemon, no camera command
+    Detect,
     /// Show all settings (the camera's status block, tracking readback, zoom, image controls, remembered state)
     Status,
     /// Put the camera to sleep
@@ -251,9 +255,9 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
             "factory reset deletes presets and settings; pass --yes".into(),
         ));
     }
-    if matches!(cmd, Cmd::Daemon | Cmd::Watch) {
+    if matches!(cmd, Cmd::Daemon | Cmd::Watch | Cmd::Detect) {
         return Err(Error::Invalid(
-            "daemon and watch are not camera commands".into(),
+            "daemon, watch and detect are not camera commands".into(),
         ));
     }
     let cam = Camera::open()?;
@@ -267,7 +271,7 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
         Ok((json!({"ok": true, "command": name, "value": value}), text))
     };
     match cmd {
-        Cmd::Daemon | Cmd::Watch => unreachable!("handled above"),
+        Cmd::Daemon | Cmd::Watch | Cmd::Detect => unreachable!("handled above"),
         Cmd::Status => {
             let full = value_name(cam.full_status()?);
             let text = flatten(&full);
@@ -532,6 +536,7 @@ pub fn run() -> i32 {
     match cli.command {
         Cmd::Daemon => return report(cli.json, crate::daemon::run()),
         Cmd::Watch => return report(cli.json, crate::client::watch()),
+        Cmd::Detect => return detect(cli.json),
         _ => {}
     }
     if !cli.direct {
@@ -549,9 +554,47 @@ pub fn run() -> i32 {
     }
 }
 
+/// `obsbot4linux detect`: exit 0 and the model (and device) of a supported camera, exit 1 and
+/// no output without one. Never goes through the daemon.
+fn detect(json: bool) -> i32 {
+    let Some(found) = obsbot4linux::device::detect() else {
+        return 1;
+    };
+    let (value, text) = detect_output(&found);
+    print_ok(json, &value, &text)
+}
+
+fn detect_output(found: &Detected) -> (Value, String) {
+    let device = found.device.to_string_lossy();
+    (
+        json!({"model": found.model.name, "device": device}),
+        found.model.name.to_string(),
+    )
+}
+
 fn report(json: bool, result: Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => print_error(json, &e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obsbot4linux::models::MODELS;
+
+    #[test]
+    fn detect_prints_the_model_and_the_streaming_node() {
+        let found = Detected {
+            model: &MODELS[0],
+            device: "/dev/v4l/by-id/usb-X-video-index0".into(),
+        };
+        let (value, text) = detect_output(&found);
+        assert_eq!(text, "Tiny 2 Lite");
+        assert_eq!(
+            value,
+            json!({"model": "Tiny 2 Lite", "device": "/dev/v4l/by-id/usb-X-video-index0"})
+        );
     }
 }
