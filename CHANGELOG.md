@@ -3,6 +3,16 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-10-25
+
+### Added
+
+- `streaming` (bool) and `streaming_apps` (process names, sorted, deduplicated) in
+  `obsbot4linux --json status` and in the daemon's state events: whether an application
+  streams from the camera. Detected from `/proc` (video node open and its buffers mapped);
+  `false` and `[]` while no camera is connected. The daemon checks every second and sends an
+  event when it changes. Only mmap-based capture and processes of the same user are seen.
+
 ## [0.2.0] - 2026-10-25
 
 ### Added

@@ -10,11 +10,13 @@ use clap::Parser;
 use obsbot4linux::camera::{CAPABILITIES, Camera};
 use obsbot4linux::error::{Error, Result};
 use obsbot4linux::state::{self, State};
+use obsbot4linux::streaming;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -41,7 +43,10 @@ fn run_request(args: &[String]) -> std::result::Result<(Value, String), String> 
 }
 
 fn unavailable() -> Value {
-    json!({"available": false, "model": null, "device": null, "capabilities": CAPABILITIES})
+    json!({
+        "available": false, "model": null, "device": null,
+        "streaming": false, "streaming_apps": [], "capabilities": CAPABILITIES
+    })
 }
 
 /// Differences in these auto-adjusted controls are not a change worth a broadcast.
@@ -114,17 +119,31 @@ impl Worker {
         }
     }
 
-    /// The gimbal pose every tick, so a pose moved by AI tracking shows within a second.
-    fn publish_pose(&mut self) {
+    /// The gimbal pose and the streaming applications every tick, so a pose moved by AI
+    /// tracking or a started video call shows within a second. One broadcast for both.
+    fn publish_live(&mut self) {
         let Some(last) = self.last.as_mut() else {
             return;
         };
-        let Ok(pose) = Camera::open().and_then(|c| c.live_pose()) else {
-            return;
-        };
-        let pose = serde_json::to_value(pose).unwrap_or(Value::Null);
-        if last["pose"] != pose {
-            last["pose"] = pose;
+        let mut changed = false;
+        if let Ok(pose) = Camera::open().and_then(|c| c.live_pose()) {
+            let pose = serde_json::to_value(pose).unwrap_or(Value::Null);
+            if last["pose"] != pose {
+                last["pose"] = pose;
+                changed = true;
+            }
+        }
+        if let Some(device) = last["device"].as_str() {
+            let apps = streaming::apps_using(Path::new(device));
+            let streaming = json!(!apps.is_empty());
+            let apps = json!(apps);
+            if last["streaming"] != streaming || last["streaming_apps"] != apps {
+                last["streaming"] = streaming;
+                last["streaming_apps"] = apps;
+                changed = true;
+            }
+        }
+        if changed {
             self.hub.broadcast(last);
         }
     }
@@ -139,7 +158,7 @@ impl Worker {
                 if status_changed || self.last_full.elapsed() >= FULL_EVERY {
                     self.publish_full(false);
                 } else {
-                    self.publish_pose();
+                    self.publish_live();
                 }
             }
         }
@@ -291,5 +310,7 @@ mod tests {
         assert!(v["model"].is_null() && v["device"].is_null());
         assert!(v.as_object().unwrap().contains_key("model"));
         assert!(v.as_object().unwrap().contains_key("device"));
+        assert_eq!(v["streaming"], false);
+        assert_eq!(v["streaming_apps"], json!([]));
     }
 }

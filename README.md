@@ -62,6 +62,24 @@ camera. Two ways to use it:
   `/dev/v4l/by-id/...-video-index0` link when there is one, else `/dev/videoN`). Both are
   `null` while no camera is connected.
 
+### Streaming applications
+
+`obsbot4linux --json status` and the state events of `obsbot4linux watch` also carry
+`streaming` (bool) and `streaming_apps` (the process names, deduplicated and sorted, `[]` when
+none). Without a camera they are `false` and `[]`. The daemon checks every second and sends an
+event as soon as they change; no camera command is involved.
+
+```json
+{"model": "Tiny 2 Lite", "streaming": true, "streaming_apps": ["ffmpeg"], "...": "..."}
+```
+
+The USB alternate setting does not show streaming (the camera uses bulk transfer), so
+obsbot4linux looks at `/proc`: a process that streams has the camera's `/dev/videoN` open
+and has mapped its buffers (the node appears in `/proc/<pid>/maps`). A process that only holds
+the node open, like a control panel, is not counted. Limits: only mmap-based capture is seen
+(DMABUF or userptr-only capture is not), processes of other users are not readable and so not
+seen, and obsbot4linux's own process is left out.
+
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist
 for the Tiny 2 Lite only; the plan is one module per model behind the same commands, once a

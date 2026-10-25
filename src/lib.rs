@@ -11,3 +11,4 @@ pub mod models;
 pub mod presets;
 pub mod state;
 pub mod status;
+pub mod streaming;

@@ -10,6 +10,7 @@ use crate::frame::{Answer, Sequence, parse_answer, query_frame};
 use crate::presets::{self, Pose, Preset};
 use crate::state::{Startup, State};
 use crate::status::{Status, Tracking};
+use crate::streaming;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -107,6 +108,10 @@ pub struct FullStatus {
     pub model: Option<&'static str>,
     /// V4L2 node the camera streams from (stable by-id path when available); null like `model`.
     pub device: Option<String>,
+    /// Whether an application is streaming from the camera (see `streaming::streaming_apps`).
+    pub streaming: bool,
+    /// `comm` names of those applications, sorted; empty when none.
+    pub streaming_apps: Vec<String>,
     /// Always true here; the daemon reports false when the camera is gone.
     pub available: bool,
     pub status: Status,
@@ -235,9 +240,12 @@ impl Camera {
         let factor = self.zoom_factor().ok();
         let absolute = self.dev.get_ctrl(ZOOM_ABSOLUTE).ok();
         let detected = self.dev.detected();
+        let streaming_apps = streaming::apps_using(&detected.device);
         Ok(FullStatus {
             model: Some(detected.model.name),
             device: Some(detected.device.to_string_lossy().into_owned()),
+            streaming: !streaming_apps.is_empty(),
+            streaming_apps,
             available: true,
             status,
             tracking,
@@ -590,6 +598,8 @@ mod full_status_tests {
         let full = FullStatus {
             model: Some("Tiny 2 Lite"),
             device: Some("/dev/v4l/by-id/x-video-index0".into()),
+            streaming: true,
+            streaming_apps: vec!["ffmpeg".into()],
             available: true,
             status: Status::decode(&[0; 60]),
             tracking: None,
@@ -605,6 +615,8 @@ mod full_status_tests {
         let v = serde_json::to_value(full).unwrap();
         assert_eq!(v["model"], "Tiny 2 Lite");
         assert_eq!(v["device"], "/dev/v4l/by-id/x-video-index0");
+        assert_eq!(v["streaming"], true);
+        assert_eq!(v["streaming_apps"], serde_json::json!(["ffmpeg"]));
         // the keys the widget already reads stay where they were
         assert_eq!(v["available"], true);
         assert!(v["status"].is_object() && v["capabilities"].is_array());
