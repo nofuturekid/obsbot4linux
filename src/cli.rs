@@ -274,7 +274,17 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
         Cmd::Daemon | Cmd::Watch | Cmd::Detect => unreachable!("handled above"),
         Cmd::Status => {
             let full = value_name(cam.full_status()?);
-            let text = flatten(&full);
+            // the box is for machines: plain text only says whether the camera sees its target
+            let mut plain = full.clone();
+            if let Some(m) = plain.as_object_mut() {
+                m.remove("target");
+            }
+            let mut text = flatten(&plain);
+            match full["target"]["detected"].as_bool() {
+                Some(true) => text.push_str("\ntarget: detected"),
+                Some(false) => text.push_str("\ntarget: searching"),
+                None => {}
+            }
             Ok((full, text))
         }
         Cmd::Sleep => cam.sleep(true).and_then(|_| done("sleep", Value::Null)),

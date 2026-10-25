@@ -3,6 +3,18 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-10-25
+
+### Added
+
+- `target` in `obsbot4linux --json status` and in the daemon's state events: the AI tracking
+  target from query `0x01c4`, `{"detected": bool, "box": [..4 floats..]}`, or `null` while
+  tracking is Static, no camera is connected or the reply is unusable. `detected` is true
+  while the camera has a target (status LED blue) and false while it searches (yellow); `box`
+  is then the last one. The daemon asks once a second, only while tracking is on, and sends an
+  event when `detected` changes, not for box movement alone. Plain `status` prints
+  `target: detected` or `target: searching` while tracking. New capability `target`.
+
 ## [0.3.1] - 2026-10-25
 
 ### Fixed

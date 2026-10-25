@@ -87,6 +87,26 @@ mmap-based capture is seen, processes of other users and sandboxed processes are
 and obsbot4linux's own process is left out. So the list can be empty while `streaming` is
 `true`; trust `streaming` for "is the camera in use".
 
+### Tracking target
+
+While AI tracking is on, `obsbot4linux --json status` and the state events of `obsbot4linux watch`
+carry `target` (query `0x01c4`): whether the camera currently has someone to follow.
+
+```json
+{"target": {"detected": true, "box": [0.174, 0.182, 0.677, 0.985]}}
+```
+
+- `detected: true`: the camera has a target (status LED blue).
+- `detected: false`: tracking is on but the camera is searching (status LED yellow); `box` is the
+  last one it had.
+- `null`: tracking is Static (LED green), no camera is connected, or the reply was unusable.
+
+`box` is four normalised (0..1) coordinates in the order the camera sends them; which corner or
+size each one is has not been established. Plain `obsbot4linux status` prints one line,
+`target: detected` or `target: searching`, while tracking. The daemon asks once a second, only
+while tracking is on, and sends a state event when `detected` changes. Box movement alone sends
+none; the latest box is included whenever an event goes out for another reason. Capability: `target`.
+
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist
 for the Tiny 2 Lite only; the plan is one module per model behind the same commands, once a

@@ -142,6 +142,38 @@ impl Tracking {
     }
 }
 
+/// The tracking target from query 0x01c4 while AI tracking is on.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Target {
+    /// True while the camera has a target (status LED blue), false while it searches (yellow).
+    pub detected: bool,
+    /// Four normalised (0..1) coordinates as the camera sends them; the last box while searching.
+    #[serde(rename = "box")]
+    pub coords: [f32; 4],
+}
+
+impl Target {
+    /// Decodes the answer to query 0x01c4: `01 01 <detected> 01 00 00` and four f32 (LE). The
+    /// one-byte `00` of Static and anything short or garbled give None.
+    pub fn decode(d: &[u8]) -> Option<Self> {
+        if d.len() < 22 || d[0] != 1 || d[2] > 1 {
+            return None;
+        }
+        let mut coords = [0f32; 4];
+        for (i, c) in coords.iter_mut().enumerate() {
+            let at = 6 + 4 * i;
+            *c = f32::from_le_bytes(d[at..at + 4].try_into().ok()?);
+            if !c.is_finite() {
+                return None;
+            }
+        }
+        Some(Self {
+            detected: d[2] == 1,
+            coords,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +245,32 @@ mod tests {
         assert!(!t.zoom_gesture && !t.direction_change);
         assert_eq!(t.gesture_zoom_ratio, 3.5);
         assert!(Tracking::decode(&[0; 11]).is_none());
+    }
+
+    #[test]
+    fn target_from_live_camera() {
+        // Real replies, firmware 6.2.8.1: blue LED, yellow LED, Static.
+        let blue = hex::decode("0101010100005949323e6ca63a3e046d2d3f0000803f").unwrap();
+        let t = Target::decode(&blue).unwrap();
+        assert!(t.detected);
+        assert!((t.coords[0] - 0.174).abs() < 1e-3 && (t.coords[3] - 1.0).abs() < 1e-6);
+        let yellow = hex::decode("010100010000e771c43eb997ff3dba56373fce473c3f").unwrap();
+        let t = Target::decode(&yellow).unwrap();
+        assert!(!t.detected);
+        assert!((t.coords[0] - 0.384).abs() < 1e-3);
+        assert_eq!(Target::decode(&[0]), None);
+    }
+
+    #[test]
+    fn target_garbled_replies_are_none() {
+        let blue = hex::decode("0101010100005949323e6ca63a3e046d2d3f0000803f").unwrap();
+        assert_eq!(Target::decode(&[]), None);
+        assert_eq!(Target::decode(&blue[..21]), None);
+        let mut bad_flag = blue.clone();
+        bad_flag[2] = 7;
+        assert_eq!(Target::decode(&bad_flag), None);
+        let mut nan = blue.clone();
+        nan[6..10].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(Target::decode(&nan), None);
     }
 }

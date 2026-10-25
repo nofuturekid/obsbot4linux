@@ -8,6 +8,7 @@ use crate::cli::{Cli, Cmd, execute};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
 use obsbot4linux::camera::{CAPABILITIES, Camera};
+use obsbot4linux::commands::AiMode;
 use obsbot4linux::error::{Error, Result};
 use obsbot4linux::state::{self, State};
 use obsbot4linux::streaming;
@@ -45,13 +46,17 @@ fn run_request(args: &[String]) -> std::result::Result<(Value, String), String> 
 fn unavailable() -> Value {
     json!({
         "available": false, "model": null, "device": null,
-        "streaming": false, "streaming_apps": [], "capabilities": CAPABILITIES
+        "streaming": false, "streaming_apps": [], "target": null, "capabilities": CAPABILITIES
     })
 }
 
 /// Differences in these auto-adjusted controls are not a change worth a broadcast.
 fn stable(state: &Value) -> Value {
     let mut s = state.clone();
+    // the box follows the person all the time; only `detected` is news
+    if let Some(target) = s.get_mut("target").and_then(Value::as_object_mut) {
+        target.remove("box");
+    }
     if let Some(image) = s.get_mut("image").and_then(Value::as_object_mut) {
         for k in ["gain", "white_balance_temperature", "exposure_time"] {
             image.remove(k);
@@ -110,6 +115,9 @@ impl Worker {
         let fresh = Camera::open().and_then(|c| c.status());
         match (fresh, self.last.as_mut()) {
             (Ok(status), Some(last)) => {
+                if status.ai_mode == Some(AiMode::Static) {
+                    last["target"] = Value::Null;
+                }
                 last["status"] = serde_json::to_value(status).unwrap_or(Value::Null);
                 last["state"] = serde_json::to_value(State::load()).unwrap_or(Value::Null);
                 self.hub.broadcast(last);
@@ -119,8 +127,9 @@ impl Worker {
         }
     }
 
-    /// The gimbal pose and the streaming applications every tick, so a pose moved by AI
-    /// tracking or a started video call shows within a second. One broadcast for both.
+    /// The gimbal pose, the tracking target and the streaming applications every tick, so a
+    /// pose moved by AI tracking or a started video call shows within a second. One broadcast
+    /// for all of them.
     fn publish_live(&mut self) {
         let Some(last) = self.last.as_mut() else {
             return;
@@ -132,6 +141,24 @@ impl Worker {
                 last["pose"] = pose;
                 changed = true;
             }
+        }
+        // box jitter alone is no event: it is kept in `last` for the next broadcast
+        let tracking = last["status"]["ai_mode"]
+            .as_str()
+            .is_some_and(|m| m != "static");
+        let target = if tracking {
+            Camera::open()
+                .and_then(|c| c.target())
+                .ok()
+                .map(|t| serde_json::to_value(t).unwrap_or(Value::Null))
+        } else {
+            Some(Value::Null)
+        };
+        if let Some(target) = target {
+            if last["target"]["detected"] != target["detected"] {
+                changed = true;
+            }
+            last["target"] = target;
         }
         if let Some(device) = last["device"].as_str() {
             let streaming = json!(streaming::is_streaming(Path::new(device)));
@@ -312,5 +339,14 @@ mod tests {
         assert!(v.as_object().unwrap().contains_key("device"));
         assert_eq!(v["streaming"], false);
         assert_eq!(v["streaming_apps"], json!([]));
+    }
+
+    #[test]
+    fn target_box_jitter_is_not_a_change_but_detected_is() {
+        let at = |detected, x| json!({"target": {"detected": detected, "box": [x, 0, 1, 1]}});
+        assert_eq!(stable(&at(true, 0.1)), stable(&at(true, 0.2)));
+        assert_ne!(stable(&at(true, 0.1)), stable(&at(false, 0.1)));
+        assert_ne!(stable(&at(true, 0.1)), stable(&json!({"target": null})));
+        assert_eq!(unavailable()["target"], Value::Null);
     }
 }

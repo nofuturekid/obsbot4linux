@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
 use crate::presets::{self, Pose, Preset};
 use crate::state::{Startup, State};
-use crate::status::{Status, Tracking};
+use crate::status::{Status, Target, Tracking};
 use crate::streaming;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -50,6 +50,7 @@ pub const CAPABILITIES: &[&str] = &[
     "image",
     "preset",
     "factory_reset",
+    "target",
 ];
 
 /// UVC controls for the picture, by CLI name (V4L2 control ids).
@@ -120,6 +121,8 @@ pub struct FullStatus {
     pub zoom: Zoom,
     /// Live gimbal pose from query 0x6604, also while AI tracking moves it.
     pub pose: Option<LivePose>,
+    /// Tracking target from query 0x01c4; None while Static or when the camera gave no usable answer.
+    pub target: Option<Target>,
     pub image: BTreeMap<String, ImageControl>,
     pub state: State,
     pub capabilities: Vec<&'static str>,
@@ -214,6 +217,12 @@ impl Camera {
         }
     }
 
+    /// Query 0x01c4: the tracking target. Only asked while AI tracking is on; Static answers
+    /// a single `00`, which is None like any reply that does not decode.
+    pub fn target(&self) -> Result<Option<Target>> {
+        Ok(Target::decode(&self.query(0x01c4)?))
+    }
+
     pub fn image_controls(&self) -> Result<BTreeMap<String, ImageControl>> {
         let mut map = BTreeMap::new();
         for (name, id) in IMAGE_CONTROLS {
@@ -241,6 +250,11 @@ impl Camera {
         let absolute = self.dev.get_ctrl(ZOOM_ABSOLUTE).ok();
         let detected = self.dev.detected();
         let streaming_apps = streaming::apps_using(&detected.device);
+        let target = if status.ai_mode == Some(AiMode::Static) {
+            None
+        } else {
+            self.target().ok().flatten()
+        };
         Ok(FullStatus {
             model: Some(detected.model.name),
             device: Some(detected.device.to_string_lossy().into_owned()),
@@ -251,6 +265,7 @@ impl Camera {
             tracking,
             zoom: Zoom { factor, absolute },
             pose: self.live_pose().ok(),
+            target,
             image: self.image_controls()?,
             state: State::load(),
             capabilities: CAPABILITIES.to_vec(),
@@ -608,6 +623,7 @@ mod full_status_tests {
                 absolute: None,
             },
             pose: None,
+            target: None,
             image: BTreeMap::new(),
             state: State::default(),
             capabilities: CAPABILITIES.to_vec(),
@@ -617,6 +633,15 @@ mod full_status_tests {
         assert_eq!(v["device"], "/dev/v4l/by-id/x-video-index0");
         assert_eq!(v["streaming"], true);
         assert_eq!(v["streaming_apps"], serde_json::json!(["ffmpeg"]));
+        assert!(v["target"].is_null());
+        let t = Target {
+            detected: true,
+            coords: [0.25, 0.5, 0.75, 1.0],
+        };
+        assert_eq!(
+            serde_json::to_value(t).unwrap(),
+            serde_json::json!({"detected": true, "box": [0.25, 0.5, 0.75, 1.0]})
+        );
         // the keys the widget already reads stay where they were
         assert_eq!(v["available"], true);
         assert!(v["status"].is_object() && v["capabilities"].is_array());
