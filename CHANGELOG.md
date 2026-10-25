@@ -3,7 +3,7 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] - 0.1.0
+## [0.1.0] - unreleased
 
 ### Added
 
@@ -22,8 +22,11 @@ All notable changes to OBSBot4Linux. The format follows
   autofocus, camera presets, start pose, factory reset.
 - Live gimbal pose (query `0x6604`) in the status, read every second by the
   daemon.
-- Arch PKGBUILD and socket-activated systemd user units
-  (`obsbot4linux.socket` / `.service`).
+- Socket-activated systemd user units (`obsbot4linux.socket` / `.service`).
+- Release packaging: GitHub Actions run fmt, clippy and tests on every push; a
+  `vX.Y.Z` tag builds tarballs, `.deb`, `.rpm` and Arch `.pkg.tar.zst` packages
+  (x86_64 and aarch64) with `SHA256SUMS` and creates the GitHub release. The
+  PKGBUILD builds either the local checkout or a release tarball.
 
 ### Changed
 

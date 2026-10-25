@@ -1,39 +1,51 @@
-# Builds the local checkout this file lives in (no remote yet).
+# Builds the local checkout this file lives in. The release workflow sets
+# OBSBOT4LINUX_TARBALL to a source tarball of the tag instead.
 pkgname=obsbot4linux
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='Control OBSBOT webcams (Tiny 2 Lite) from the console, with a daemon for the DMS widget'
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
+url='https://github.com/nofuturekid/obsbot4linux'
 license=('GPL-3.0-or-later')
 depends=('gcc-libs' 'glibc')
-makedepends=('cargo' 'git')
-source=("$pkgname::git+file://$(realpath "$startdir/../..")")
-sha256sums=('SKIP')
+makedepends=('cargo')
 
-pkgver() {
-  cd "$pkgname"
-  printf '%s.r%s.g%s' "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
-    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
-}
+if [[ -n ${OBSBOT4LINUX_TARBALL:-} ]]; then
+  source=("$pkgname-$pkgver.tar.gz::file://$OBSBOT4LINUX_TARBALL")
+  sha256sums=("$(sha256sum "$OBSBOT4LINUX_TARBALL" | cut -d' ' -f1)")
+  _src="$pkgname-$pkgver"
+else
+  makedepends+=('git')
+  source=("$pkgname::git+file://$(realpath "$startdir/../..")")
+  sha256sums=('SKIP')
+  _src="$pkgname"
+
+  pkgver() {
+    cd "$_src"
+    printf '%s.r%s.g%s' "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
+      "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  }
+fi
 
 prepare() {
-  cd "$pkgname"
+  cd "$_src"
   cargo fetch --locked --target "$(rustc --print host-tuple)"
 }
 
 build() {
-  cd "$pkgname"
+  cd "$_src"
   cargo build --frozen --release
 }
 
 check() {
-  cd "$pkgname"
+  cd "$_src"
   cargo test --frozen
 }
 
 package() {
-  cd "$pkgname"
+  cd "$_src"
   install -Dm755 target/release/obsbot4linux -t "$pkgdir/usr/bin"
   install -Dm644 packaging/systemd/obsbot4linux.{socket,service} -t "$pkgdir/usr/lib/systemd/user"
   install -Dm644 README.md CHANGELOG.md -t "$pkgdir/usr/share/doc/$pkgname"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
 }

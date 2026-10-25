@@ -2,8 +2,12 @@
 name = "obsbot4linux"
 version = "0.1.0"
 edition = "2024"
-description = "Control the OBSBOT Tiny 2 Lite webcam on Linux"
+description = "Control OBSBOT webcams on Linux from the console, with a daemon for the DMS widget"
+authors = ["Thomas Kroll"]
 license = "GPL-3.0-or-later"
+repository = "https://github.com/nofuturekid/obsbot4linux"
+homepage = "https://github.com/nofuturekid/obsbot4linux"
+readme = "README.md"
 publish = false
 
 [lib]
@@ -21,5 +25,32 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
+[profile.release]
+strip = true
+
 [dev-dependencies]
 hex = "0.4"
+
+[package.metadata.deb]
+maintainer = "Thomas Kroll <t.kroll@outlook.com>"
+section = "video"
+extended-description = "Every setting OBSBOT Center offers, from the console and from the DMS bar widget.\nThe obsbot4linux daemon (systemd user socket) owns the camera state."
+depends = "$auto"
+license-file = ["LICENSE", "0"]
+assets = [
+    ["target/release/obsbot4linux", "usr/bin/", "755"],
+    ["packaging/systemd/obsbot4linux.service", "usr/lib/systemd/user/", "644"],
+    ["packaging/systemd/obsbot4linux.socket", "usr/lib/systemd/user/", "644"],
+    ["README.md", "usr/share/doc/obsbot4linux/", "644"],
+    ["CHANGELOG.md", "usr/share/doc/obsbot4linux/", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/obsbot4linux", dest = "/usr/bin/obsbot4linux", mode = "755" },
+    { source = "packaging/systemd/obsbot4linux.service", dest = "/usr/lib/systemd/user/obsbot4linux.service", mode = "644" },
+    { source = "packaging/systemd/obsbot4linux.socket", dest = "/usr/lib/systemd/user/obsbot4linux.socket", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/obsbot4linux/README.md", mode = "644", doc = true },
+    { source = "CHANGELOG.md", dest = "/usr/share/doc/obsbot4linux/CHANGELOG.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/obsbot4linux/LICENSE", mode = "644", doc = true },
+]
