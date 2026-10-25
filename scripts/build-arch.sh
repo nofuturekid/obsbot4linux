@@ -18,11 +18,23 @@ cp "$root/packaging/arch/PKGBUILD" "$work/PKGBUILD"
 sed -i "s/^pkgver=.*/pkgver=$ver/" "$work/PKGBUILD"
 chmod -R a+rwX "$work"
 
-docker run --rm -v "$work:/work" -e VER="$ver" "$image" sh -ec '
+# The container runs as root, builds as "builder" and finally hands /work back to the
+# calling user (HOST_UID/HOST_GID): their uids differ on CI runners, and without the
+# chown the cleanup trap above cannot delete the files (and /tmp is sticky).
+# PKGEXT is set because Arch Linux ARM's makepkg.conf still defaults to .pkg.tar.xz.
+docker run --rm -v "$work:/work" -e VER="$ver" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  "$image" sh -ec '
+  trap "chown -R \$HOST_UID:\$HOST_GID /work" EXIT
   pacman -Syu --noconfirm --needed --disable-sandbox cargo
   useradd -m builder
   chown -R builder /work
-  su builder -c "cd /work && OBSBOT4LINUX_TARBALL=/work/obsbot4linux-$VER.tar.gz PKGDEST=/work/out makepkg --noconfirm"
-  chmod -R a+rwX /work
+  su builder -c "cd /work && OBSBOT4LINUX_TARBALL=/work/obsbot4linux-$VER.tar.gz PKGDEST=/work/out PKGEXT=.pkg.tar.zst makepkg --noconfirm"
 '
-cp "$work"/out/obsbot4linux-"$ver"-1-*.pkg.tar.zst "$out"
+
+pkg=$(ls "$work"/out/obsbot4linux-"$ver"-1-*.pkg.tar.zst 2>/dev/null || true)
+if [ -z "$pkg" ]; then
+  echo "build-arch.sh: no obsbot4linux-$ver-1-*.pkg.tar.zst in /work/out; it contains:" >&2
+  ls -la "$work/out" >&2 || true
+  exit 1
+fi
+cp $pkg "$out"

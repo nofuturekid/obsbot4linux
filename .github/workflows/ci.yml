@@ -13,7 +13,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Docs-only changes (Markdown, LICENSE, docs/) skip fmt, clippy and test.
+  changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE...$PR_HEAD"
+          else
+            range="$PUSH_BEFORE...$PUSH_HEAD"
+          fi
+          # Anything unclear (new branch, force push, empty diff) counts as code.
+          code=true
+          if files=$(git diff --name-only "$range") && [ -n "$files" ]; then
+            code=false
+            for f in $files; do
+              case $f in
+                *.md | LICENSE | docs/*) ;;
+                *) code=true ;;
+              esac
+            done
+          fi
+          echo "changed files ($range):"
+          echo "$files"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
   fmt:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -21,6 +59,8 @@ jobs:
       - run: cargo fmt --check
 
   clippy:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,16 +68,30 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal --no-self-update
       - run: cargo test --locked
 
-  # The one check the main ruleset requires.
+  # The one check the main ruleset requires. Code changes need fmt, clippy and test to
+  # succeed; docs-only changes need them skipped. Anything else fails.
   required:
     if: always()
-    needs: [fmt, clippy, test]
+    needs: [changes, fmt, clippy, test]
     runs-on: ubuntu-22.04
+    env:
+      CHANGES: ${{ needs.changes.result }}
+      CODE: ${{ needs.changes.outputs.code }}
+      JOBS: ${{ needs.fmt.result }} ${{ needs.clippy.result }} ${{ needs.test.result }}
     steps:
-      - run: test "${{ join(needs.*.result, ' ') }}" = "success success success"
+      - run: |
+          echo "changes=$CHANGES code=$CODE fmt/clippy/test=$JOBS"
+          test "$CHANGES" = success
+          case $CODE in
+            true) test "$JOBS" = "success success success" ;;
+            false) test "$JOBS" = "skipped skipped skipped" ;;
+            *) exit 1 ;;
+          esac
