@@ -123,6 +123,37 @@ pub fn startup_pose(source: u32, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE
     Ok(frame(RECEIVER, 0x3ec4, &data, seq))
 }
 
+/// Zone return position (`0x4e84`): index 0, then the preset layout with a 0 in place of the
+/// last value. Degrees and zoom factor as for presets (tilt positive up here, flipped on the wire).
+pub fn zone_return_set(pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !(pose.pan.is_finite() && pose.tilt.is_finite() && (1.0..=4.0).contains(&pose.zoom)) {
+        return Err(Error::Invalid(
+            "zone return position needs finite pan/tilt and zoom 1.0-4.0".into(),
+        ));
+    }
+    let mut data = 0u32.to_le_bytes().to_vec();
+    for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, 0.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(frame(0x04, 0x4e84, &data, seq))
+}
+
+/// Decodes the 24-byte pose of the readbacks `0x4ec4` (zone return position) and `0x3884`
+/// (start pose): the leading `u32` and the pose in user angles. None when the reply is short or
+/// holds a value that is not a number.
+pub fn parse_pose(data: &[u8]) -> Option<(u32, Pose)> {
+    let word = |i: usize| -> Option<[u8; 4]> { data.get(i * 4..i * 4 + 4)?.try_into().ok() };
+    let float = |i: usize| word(i).map(f32::from_le_bytes).filter(|v| v.is_finite());
+    Some((
+        u32::from_le_bytes(word(0)?),
+        Pose {
+            pan: float(1)?,
+            tilt: -float(2)? + 0.0,
+            zoom: float(4)?,
+        },
+    ))
+}
+
 /// Picture settings of the initial state with every group "not set", as in capture 08.
 pub fn startup_picture_settings(seq: u16) -> [u8; FRAME_SIZE] {
     let mut data = [0u8; 40];
@@ -244,6 +275,55 @@ mod tests {
             c,
             "aa256b010c00257e0a04843d2c002a5f00000000feffffffffffffff80ffffffffffffff00000000ffffffff00ffffffffffffffff00000000000000",
         );
+    }
+
+    #[test]
+    fn zone_return_set_matches_the_preset_layout() {
+        // pan 20, tilt 5 up (user angles, so -5 on the wire), zoom 1, as measured
+        let f = zone_return_set(
+            Pose {
+                pan: 20.0,
+                tilt: 5.0,
+                zoom: 1.0,
+            },
+            7,
+        )
+        .unwrap();
+        assert_eq!(f[10..12], [0x84, 0x4e]);
+        assert_eq!(
+            f[16..40],
+            hex::decode("000000000000a0410000a0c0000000000000803f00000000").unwrap()[..]
+        );
+        assert!(
+            zone_return_set(
+                Pose {
+                    pan: 0.0,
+                    tilt: 0.0,
+                    zoom: 0.5
+                },
+                0
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pose_readbacks_decode_as_measured() {
+        // 0x4ec4 reply from the camera: pan 20, wire tilt -5 (= 5 up), zoom 1
+        let (lead, p) =
+            parse_pose(&hex::decode("000000000000a0410000a0c0000000000000803f00000000").unwrap())
+                .unwrap();
+        assert_eq!(lead, 0);
+        assert_eq!((p.pan, p.tilt, p.zoom), (20.0, 5.0, 1.0));
+        // 0x3884 reply: leading 3 = own pose, pan 10
+        let (lead, p) =
+            parse_pose(&hex::decode("030000000000204100000000000000000000803f00000000").unwrap())
+                .unwrap();
+        assert_eq!(lead, 3);
+        assert_eq!((p.pan, p.tilt, p.zoom), (10.0, 0.0, 1.0));
+        assert!(!p.tilt.is_sign_negative(), "no -0 in the output");
+        assert!(parse_pose(&[0; 12]).is_none());
+        assert!(parse_pose(&[0xff; 24]).is_none(), "NaN is no pose");
     }
 
     #[test]

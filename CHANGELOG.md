@@ -3,6 +3,31 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `zone` in `obsbot4linux --json status` and the daemon's state events: the zone area
+  (`pan_min`, `pan_max`, `tilt_min`, `tilt_max`), `follow` and the `return` position
+  (`pan`, `tilt`, `zoom`), read from the camera (queries `0x4c44`, `0x4cc4`, `0x4d44`,
+  `0x4dc4`, `0x4e44`, `0x4ec4`). `null` when the camera does not answer.
+- `zone return-go` moves the camera to the zone return position (`0x4f44`); new capability
+  `zone_return`.
+- `startup go` moves the camera to the start pose (`0x3904`).
+
+### Changed
+
+- `state.zone_follow` and `state.startup` in the status are read from the camera (`0x4e44`,
+  `0x3884`) instead of the state file; the keys are unchanged. They are `null` when the camera
+  does not answer, and the state file no longer stores them. The daemon asks for the zone values
+  at start, after each command and once a minute.
+
+### Fixed
+
+- `zone return-here` sent `0x3904`, which moves the gimbal to the boot pose and stores nothing
+  (#16). It now reads the current pose (`0x6604`, `0x6804`) and sets it as the zone return
+  position with `0x4e84`. The old behaviour is `startup go`.
+
 ## [0.4.0] - 2026-10-25
 
 ### Added

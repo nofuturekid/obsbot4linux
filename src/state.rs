@@ -34,12 +34,9 @@ pub struct State {
     /// Last pose sent; None when unknown (never set, or tracking may have moved it since).
     pub gimbal: Option<Gimbal>,
     pub exposure_mode: Option<ExposureMode>,
-    /// Zone tracking "follow new targets"; the camera has no readback for it.
-    pub zone_follow: Option<bool>,
-    /// Start pose last sent as initial state (applied by the camera at power-on); no readback.
-    pub startup: Option<Startup>,
 }
 
+/// The start pose (initial state, applied by the camera at power-on), read from query `0x3884`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Startup {
     /// Preset slot the start pose was taken from, if any.

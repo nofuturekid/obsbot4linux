@@ -107,6 +107,30 @@ size each one is has not been established. Plain `obsbot4linux status` prints on
 while tracking is on, and sends a state event when `detected` changes. Box movement alone sends
 none; the latest box is included whenever an event goes out for another reason. Capability: `target`.
 
+### Zone tracking and start pose
+
+`obsbot4linux --json status` and the state events of `obsbot4linux watch` carry the zone
+settings, read from the camera (queries `0x4c44` / `0x4cc4` / `0x4d44` / `0x4dc4`, `0x4e44`,
+`0x4ec4`, `0x3884`) and not from what was sent last. Angles are the ones `zone area` takes: pan
+positive = camera left, tilt positive = up.
+
+```json
+{"zone": {"pan_min": -10.0, "pan_max": 10.0, "tilt_min": -5.0, "tilt_max": 5.0, "follow": true,
+          "return": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0}},
+ "state": {"zone_follow": true, "startup": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": null}}}
+```
+
+`zone` is `null` when the camera does not answer. `state.zone_follow` and `state.startup` keep
+their place and now come from the camera too (`null` without an answer); `startup.preset` is the
+preset slot the start pose was taken from, `null` for an own pose.
+
+- `zone return-here` stores the current pose (queries `0x6604` and `0x6804`) as the position the
+  zone tracking returns to; `zone return-go` moves the camera there.
+- `startup go` moves the camera to the start pose now (what `zone return-here` sent before 0.5.0).
+
+The daemon reads these seven values at start, after each command and then once a minute, not with
+every poll. Capability: `zone_return`.
+
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist
 for the Tiny 2 Lite only; the plan is one module per model behind the same commands, once a

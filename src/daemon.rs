@@ -7,7 +7,7 @@
 use crate::cli::{Cli, Cmd, execute};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
-use obsbot4linux::camera::{CAPABILITIES, Camera};
+use obsbot4linux::camera::{CAPABILITIES, Camera, ZoneInfo};
 use obsbot4linux::commands::AiMode;
 use obsbot4linux::error::{Error, Result};
 use obsbot4linux::state::{self, State};
@@ -25,6 +25,9 @@ use std::time::{Duration, Instant};
 const TICK: Duration = Duration::from_secs(1);
 /// The 0x0104 / zoom queries and the image controls are read at least this often.
 const FULL_EVERY: Duration = Duration::from_secs(5);
+/// The zone and start pose readbacks (seven queries) change only by a command, so they are asked
+/// again after one of ours and otherwise this often, to notice changes made with OBSBOT Center.
+const ZONE_EVERY: Duration = Duration::from_secs(60);
 
 struct Job {
     args: Vec<String>,
@@ -70,14 +73,29 @@ struct Worker {
     /// Last full state seen from the camera (None while it is unavailable).
     last: Option<Value>,
     last_full: Instant,
+    /// Zone and start pose readbacks with the time they were read; dropped after a command.
+    zone: Option<(ZoneInfo, Instant)>,
     dirty: bool,
     /// Whether the last poll found the camera; None before the first one.
     up: Option<bool>,
 }
 
 impl Worker {
-    fn read_full(&self) -> Result<Value> {
-        let full = Camera::open()?.full_status()?;
+    fn read_full(&mut self) -> Result<Value> {
+        let known = self
+            .zone
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < ZONE_EVERY)
+            .map(|(info, _)| info.clone());
+        let reused = known.is_some();
+        let full = Camera::open()?.full_status_with(known)?;
+        if !reused {
+            let info = ZoneInfo {
+                zone: full.zone.clone(),
+                startup: full.state.startup,
+            };
+            self.zone = Some((info, Instant::now()));
+        }
         serde_json::to_value(full).map_err(|e| Error::Invalid(e.to_string()))
     }
 
@@ -119,7 +137,12 @@ impl Worker {
                     last["target"] = Value::Null;
                 }
                 last["status"] = serde_json::to_value(status).unwrap_or(Value::Null);
-                last["state"] = serde_json::to_value(State::load()).unwrap_or(Value::Null);
+                // the remembered values only; zone_follow and startup come from the camera
+                if let Ok(Value::Object(fresh)) = serde_json::to_value(State::load()) {
+                    for (k, v) in fresh {
+                        last["state"][k] = v;
+                    }
+                }
                 self.hub.broadcast(last);
                 self.dirty = true;
             }
@@ -207,6 +230,7 @@ impl Worker {
                     let changed = result.is_ok() && !is_status;
                     let _ = job.reply.send(result);
                     if changed {
+                        self.zone = None;
                         self.publish_quick();
                     }
                 }
@@ -315,6 +339,7 @@ pub fn run() -> Result<()> {
         hub: hub.clone(),
         last: None,
         last_full: Instant::now(),
+        zone: None,
         dirty: false,
         up: None,
     };

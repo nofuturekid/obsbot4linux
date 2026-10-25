@@ -106,7 +106,7 @@ pub enum Cmd {
     /// Focus: autofocus mode, continuous autofocus, manual focus
     #[command(subcommand)]
     Focus(FocusCmd),
-    /// Initial state: the pose the camera moves to when it powers on (the camera cannot report it)
+    /// Initial state: the pose the camera moves to when it powers on
     #[command(subcommand)]
     Startup(StartupCmd),
     /// UVC image control, e.g. "image brightness 128" (names are in "status")
@@ -158,11 +158,11 @@ pub enum GestureCmd {
 pub enum ZoneCmd {
     On,
     Off,
-    /// Automatically follow new targets (no readback; remembered in the state file)
+    /// Automatically follow new targets
     Follow {
         state: OnOff,
     },
-    /// Area the zone tracking stays in, in degrees (no readback). Full area: --pan -100 100 --tilt -30 30
+    /// Area the zone tracking stays in, in degrees. Full area: --pan -100 100 --tilt -30 30
     Area {
         /// Pan range, MIN MAX, positive = camera left (-100..100)
         #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
@@ -173,6 +173,8 @@ pub enum ZoneCmd {
     },
     /// Take the current camera pose as the position the zone tracking returns to
     ReturnHere,
+    /// Move the camera to the zone return position
+    ReturnGo,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -211,6 +213,8 @@ pub enum StartupCmd {
         #[arg(long, conflicts_with = "pan")]
         current: bool,
     },
+    /// Move the camera to the start pose now (the pose it takes at power-on)
+    Go,
 }
 
 #[derive(Subcommand)]
@@ -392,7 +396,10 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
                 .and_then(|_| done("zone_area", json!({ "pan": pan, "tilt": tilt }))),
             ZoneCmd::ReturnHere => cam
                 .set_zone_return_here()
-                .and_then(|_| done("zone_return", json!("here"))),
+                .and_then(|pose| done("zone_return", json!({"pose": pose}))),
+            ZoneCmd::ReturnGo => cam
+                .zone_return_go()
+                .and_then(|_| done("zone_return_go", Value::Null)),
         },
         Cmd::Focus(f) => match f {
             FocusCmd::Mode { mode } => {
@@ -429,6 +436,9 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
             };
             done("startup", json!({"pose": pose, "preset": preset}))
         }
+        Cmd::Startup(StartupCmd::Go) => cam
+            .startup_go()
+            .and_then(|_| done("startup_go", Value::Null)),
         Cmd::Image { control, value } => cam
             .set_image(&control, value)
             .and_then(|_| done("image", json!({"control": control, "value": value}))),

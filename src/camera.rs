@@ -45,6 +45,7 @@ pub const CAPABILITIES: &[&str] = &[
     "hand",
     "zone",
     "zone_follow",
+    "zone_return",
     "focus",
     "startup",
     "image",
@@ -124,8 +125,44 @@ pub struct FullStatus {
     /// Tracking target from query 0x01c4; None while Static or when the camera gave no usable answer.
     pub target: Option<Target>,
     pub image: BTreeMap<String, ImageControl>,
-    pub state: State,
+    pub state: StateView,
+    /// Zone tracking area, follow and return position read from the camera; None when it did not
+    /// answer the queries.
+    pub zone: Option<Zone>,
     pub capabilities: Vec<&'static str>,
+}
+
+/// `state` in the status: what obsbot4linux remembers (state file), plus `zone_follow` and
+/// `startup`, which are read from the camera (null when it did not answer). Kept under `state`
+/// so existing clients keep working.
+#[derive(Debug, Serialize)]
+pub struct StateView {
+    #[serde(flatten)]
+    pub remembered: State,
+    pub zone_follow: Option<bool>,
+    pub startup: Option<Startup>,
+}
+
+/// Zone tracking settings as the camera reports them, in obsbot4linux's angles (pan positive =
+/// camera left, tilt positive = up; the same as `zone area` takes).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Zone {
+    pub pan_min: f32,
+    pub pan_max: f32,
+    pub tilt_min: f32,
+    pub tilt_max: f32,
+    /// Automatically follow new targets.
+    pub follow: bool,
+    /// Where the zone tracking returns to (`zone return-here` sets it, `zone return-go` moves there).
+    #[serde(rename = "return")]
+    pub return_pose: Pose,
+}
+
+/// The rarely changing readbacks; the daemon keeps them between full reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZoneInfo {
+    pub zone: Option<Zone>,
+    pub startup: Option<Startup>,
 }
 
 /// One sequence for the whole process, so frames from separate `Camera` handles (the daemon
@@ -239,7 +276,61 @@ impl Camera {
         Ok(map)
     }
 
+    /// Reads a float answer of `command` (zone area queries).
+    fn query_f32(&self, command: u16) -> Result<f32> {
+        let d = self.query(command)?;
+        d.get(..4)
+            .and_then(|s| s.try_into().ok())
+            .map(f32::from_le_bytes)
+            .filter(|v| v.is_finite())
+            .ok_or(Error::NoAnswer(command))
+    }
+
+    /// Queries `0x4c44` / `0x4cc4` (pan min / max), `0x4d44` / `0x4dc4` (tilt min / max, camera
+    /// pitch: positive down, so min and max swap and flip), `0x4e44` (follow), `0x4ec4` (return
+    /// position). All of them are queries OBSBOT Center sends to this camera.
+    pub fn zone(&self) -> Result<Zone> {
+        let pitch_min = self.query_f32(0x4d44)?;
+        let pitch_max = self.query_f32(0x4dc4)?;
+        let follow = self.query(0x4e44)?;
+        let (_, return_pose) =
+            presets::parse_pose(&self.query(0x4ec4)?).ok_or(Error::NoAnswer(0x4ec4))?;
+        Ok(Zone {
+            pan_min: self.query_f32(0x4c44)?,
+            pan_max: self.query_f32(0x4cc4)?,
+            tilt_min: -pitch_max + 0.0,
+            tilt_max: -pitch_min + 0.0,
+            follow: follow.first().ok_or(Error::NoAnswer(0x4e44))? != &0,
+            return_pose,
+        })
+    }
+
+    /// Query `0x3884`: the start pose of the initial state. The leading number is 0-2 for a
+    /// preset slot and 3 for an own pose.
+    pub fn startup(&self) -> Result<Startup> {
+        let (source, pose) =
+            presets::parse_pose(&self.query(0x3884)?).ok_or(Error::NoAnswer(0x3884))?;
+        Ok(Startup {
+            preset: u8::try_from(source).ok().filter(|s| *s < presets::SLOTS),
+            pan: pose.pan,
+            tilt: pose.tilt,
+            zoom: pose.zoom,
+        })
+    }
+
+    pub fn zone_info(&self) -> ZoneInfo {
+        ZoneInfo {
+            zone: self.zone().ok(),
+            startup: self.startup().ok(),
+        }
+    }
+
     pub fn full_status(&self) -> Result<FullStatus> {
+        self.full_status_with(None)
+    }
+
+    /// Like [`Camera::full_status`], with the zone readbacks given instead of asked for again.
+    pub fn full_status_with(&self, known: Option<ZoneInfo>) -> Result<FullStatus> {
         let status = self.status()?;
         let tracking = match self.tracking() {
             Ok(t) => Some(t),
@@ -255,6 +346,7 @@ impl Camera {
         } else {
             self.target().ok().flatten()
         };
+        let ZoneInfo { zone, startup } = known.unwrap_or_else(|| self.zone_info());
         Ok(FullStatus {
             model: Some(detected.model.name),
             device: Some(detected.device.to_string_lossy().into_owned()),
@@ -267,7 +359,12 @@ impl Camera {
             pose: self.live_pose().ok(),
             target,
             image: self.image_controls()?,
-            state: State::load(),
+            state: StateView {
+                remembered: State::load(),
+                zone_follow: zone.as_ref().map(|z| z.follow),
+                startup,
+            },
+            zone,
             capabilities: CAPABILITIES.to_vec(),
         })
     }
@@ -360,17 +457,31 @@ impl Camera {
         Ok(())
     }
 
-    pub fn set_zone_return_here(&self) -> Result<()> {
-        self.framed(&cmd::zone_return_here(self.seq.next()))
+    /// Sets the current pose (live pose 0x6604 and zoom 0x6804, as Center reads it before saving a
+    /// preset) as the zone return position and returns it.
+    pub fn set_zone_return_here(&self) -> Result<Pose> {
+        let live = self.live_pose()?;
+        let pose = Pose {
+            pan: live.pan as f32,
+            tilt: live.tilt as f32 + 0.0, // no -0
+            zoom: self.zoom_factor()?.clamp(1.0, MAX_ZOOM),
+        };
+        self.framed(&presets::zone_return_set(pose, self.seq.next())?)?;
+        Ok(pose)
+    }
+
+    /// Moves the gimbal to the zone return position.
+    pub fn zone_return_go(&self) -> Result<()> {
+        self.framed(&cmd::zone_return_go(self.seq.next()))
+    }
+
+    /// Moves the gimbal to the boot pose (the start pose of the initial state).
+    pub fn startup_go(&self) -> Result<()> {
+        self.framed(&cmd::startup_go(self.seq.next()))
     }
 
     pub fn set_zone_follow(&self, on: bool) -> Result<()> {
-        self.framed(&cmd::zone_follow(on, self.seq.next()))?;
-        State {
-            zone_follow: Some(on),
-            ..State::load()
-        }
-        .save()
+        self.framed(&cmd::zone_follow(on, self.seq.next()))
     }
 
     /// Autofocus mode: face or global (status byte 0x0d follows).
@@ -397,24 +508,12 @@ impl Camera {
     }
 
     /// Initial state: the pose the camera moves to at power-on, then "no picture settings".
-    /// There is no readback, so it goes into the state file.
     pub fn set_startup(&self, pose: Pose, preset: Option<u8>) -> Result<()> {
         let source = preset.map_or(3, u32::from);
         let pose_frame = presets::startup_pose(source, pose, self.seq.next())?;
         self.framed(&pose_frame)?;
         sleep(PAIR_GAP);
-        self.framed(&presets::startup_picture_settings(self.seq.next()))?;
-        let startup = Startup {
-            preset,
-            pan: pose.pan,
-            tilt: pose.tilt,
-            zoom: pose.zoom,
-        };
-        State {
-            startup: Some(startup),
-            ..State::load()
-        }
-        .save()
+        self.framed(&presets::startup_picture_settings(self.seq.next()))
     }
 
     /// Start pose from a stored preset.
@@ -606,6 +705,27 @@ impl Camera {
 
 #[cfg(test)]
 mod full_status_tests {
+    #[test]
+    fn zone_serialises_with_return_as_key() {
+        let z = Zone {
+            pan_min: -10.0,
+            pan_max: 10.0,
+            tilt_min: -5.0,
+            tilt_max: 5.0,
+            follow: true,
+            return_pose: Pose {
+                pan: 0.0,
+                tilt: 0.0,
+                zoom: 1.0,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(z).unwrap(),
+            serde_json::json!({"pan_min": -10.0, "pan_max": 10.0, "tilt_min": -5.0, "tilt_max": 5.0,
+                "follow": true, "return": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0}})
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -625,7 +745,12 @@ mod full_status_tests {
             pose: None,
             target: None,
             image: BTreeMap::new(),
-            state: State::default(),
+            state: StateView {
+                remembered: State::default(),
+                zone_follow: Some(true),
+                startup: None,
+            },
+            zone: None,
             capabilities: CAPABILITIES.to_vec(),
         };
         let v = serde_json::to_value(full).unwrap();
@@ -634,6 +759,9 @@ mod full_status_tests {
         assert_eq!(v["streaming"], true);
         assert_eq!(v["streaming_apps"], serde_json::json!(["ffmpeg"]));
         assert!(v["target"].is_null());
+        // zone_follow stays under state, next to the remembered values
+        assert_eq!(v["state"]["zone_follow"], true);
+        assert!(v["state"]["startup"].is_null() && v["zone"].is_null());
         let t = Target {
             detected: true,
             coords: [0.25, 0.5, 0.75, 1.0],
