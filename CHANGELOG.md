@@ -3,7 +3,7 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.5.0] - 2026-10-25
+## [0.6.0] - 2026-10-25
 
 ### Added
 
@@ -14,6 +14,11 @@ All notable changes to OBSBot4Linux. The format follows
 - `hand return-here` sets the current pose as the hand tracking return position (`0x24c4`),
   `hand return-go` moves the camera there (`0x2584`) and `hand return-reset` clears it (`0x2544`);
   new capability `hand_return`. `hand left` and `hand right` work as before.
+
+## [0.5.0] - 2026-10-25
+
+### Added
+
 - `zone` in `obsbot4linux --json status` and the daemon's state events: the zone area
   (`pan_min`, `pan_max`, `tilt_min`, `tilt_max`), `follow` and the `return` position
   (`pan`, `tilt`, `zoom`), read from the camera (queries `0x4c44`, `0x4cc4`, `0x4d44`,
