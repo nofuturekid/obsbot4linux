@@ -12,8 +12,7 @@ Every change goes through an issue and a pull request, also the maintainer's:
 5. The maintainer merges fast-forward only, by pushing the green PR head to `main`, so your
    commits keep their hashes and signatures. The merge button is not used.
 
-Protocol details and captures live in
-[obsbot-tiny2-lite-protocol](https://github.com/nofuturekid/obsbot-tiny2-lite-protocol).
+The protocol notes and captures are not public at the moment.
 Changes to camera commands need evidence (a capture or a measured read-back), not a guess.
 
 Contributions written with AI assistance are welcome; say so in the pull request.

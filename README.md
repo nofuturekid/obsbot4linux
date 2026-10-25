@@ -4,9 +4,8 @@ Control OBSBOT webcams on Linux, currently the Tiny 2 Lite: every setting OBSBOT
 offers, from the console and from the DMS bar widget
 [dms-obsbot-control](https://github.com/nofuturekid/dms-obsbot-control).
 
-The protocol comes from USB captures of OBSBOT Center, documented in
-[obsbot-tiny2-lite-protocol](https://github.com/nofuturekid/obsbot-tiny2-lite-protocol);
-commands are tested byte for byte against the captured frames.
+The protocol comes from USB captures of OBSBOT Center (the protocol notes are not public
+at the moment); commands are tested byte for byte against the captured frames.
 
 ## Design
 
