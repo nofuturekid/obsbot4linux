@@ -8,6 +8,8 @@ Every change goes through an issue and a pull request, also the maintainer's:
    Changes that only touch docs (Markdown files, `LICENSE`, `docs/`) skip those three; the
    `required` check still reports. No changelog entry is enforced per pull request; the release
    tag needs its `CHANGELOG.md` section.
+   Changes that come from someone else (a merged pull request, or an issue or report that led to
+   the change) are credited at the end of their `CHANGELOG.md` line as `(#N, thanks @handle)`.
 4. Commits are signed; `main` only accepts signed commits and a linear history.
 5. The maintainer merges fast-forward only, by pushing the green PR head to `main`, so your
    commits keep their hashes and signatures. The merge button is not used.
