@@ -9,21 +9,37 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every job's toolchain; verify fails unless ci.yml pins the same.
+  RUSTUP_TOOLCHAIN: '1.99.1'
 
 jobs:
-  # Fails at once unless Cargo.toml and CHANGELOG.md match the tag.
+  # Fails at once unless the tagged commit is on main, Cargo.toml and CHANGELOG.md match
+  # the tag and ci.yml tests with the same toolchain.
   verify:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: git merge-base --is-ancestor HEAD origin/main
       - run: scripts/changelog-section.sh "$GITHUB_REF_NAME" > /dev/null
+      - run: |
+          grep -qx "  RUSTUP_TOOLCHAIN: '$RUSTUP_TOOLCHAIN'" .github/workflows/ci.yml
 
+  # The fmt, clippy and test steps of ci.yml.
   test:
     needs: verify
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --no-self-update
+        with:
+          persist-credentials: false
+      - run: >-
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          --component rustfmt --component clippy --no-self-update
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
   # One job per package format and architecture: a failure reruns only that job.
@@ -40,7 +56,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --no-self-update
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
       - run: cargo build --release --locked
       - name: Build tarball
         env:
@@ -80,7 +98,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --no-self-update
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
       - run: cargo install --locked cargo-deb@3.8.0
       - run: sudo apt-get install -y --no-install-recommends dpkg-dev
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -115,7 +135,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --no-self-update
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
       - run: cargo install --locked cargo-generate-rpm@0.21.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -153,6 +175,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build Arch package
         env:
           ARCH_IMAGE: ${{ matrix.arch_image }}
@@ -168,18 +192,26 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      # build provenance attestation: OIDC token and the attestations API
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: dist-*
           merge-multiple: true
+      - run: cd dist && sha256sum obsbot4linux* > SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           scripts/changelog-section.sh "$GITHUB_REF_NAME" > notes.md
-          (cd dist && sha256sum obsbot4linux* > SHA256SUMS)
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
             --notes-file notes.md dist/*

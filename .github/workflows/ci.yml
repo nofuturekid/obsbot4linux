@@ -11,6 +11,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every job's toolchain, also in release.yml: bump both deliberately, a new clippy can bring
+  # new lints.
+  RUSTUP_TOOLCHAIN: '1.99.1'
 
 jobs:
   # Docs-only changes (Markdown, LICENSE, docs/) skip fmt, clippy and test.
@@ -22,6 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
@@ -55,7 +59,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update
       - run: cargo fmt --check
 
   clippy:
@@ -64,8 +70,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
-      - run: cargo clippy --all-targets -- -D warnings
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --no-self-update
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
     needs: changes
@@ -73,25 +81,44 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal --no-self-update
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
       - run: cargo test --locked
 
-  # The one check the main ruleset requires. Code changes need fmt, clippy and test to
+  # Builds and tests with the oldest Rust that Cargo.toml's rust-version claims.
+  msrv:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$msrv"
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
+          cargo "+$msrv" test --locked
+
+  # The one check the main ruleset requires. Code changes need fmt, clippy, test and msrv to
   # succeed; docs-only changes need them skipped. Anything else fails.
   required:
     if: always()
-    needs: [changes, fmt, clippy, test]
+    needs: [changes, fmt, clippy, test, msrv]
     runs-on: ubuntu-22.04
     env:
       CHANGES: ${{ needs.changes.result }}
       CODE: ${{ needs.changes.outputs.code }}
-      JOBS: ${{ needs.fmt.result }} ${{ needs.clippy.result }} ${{ needs.test.result }}
+      JOBS: >-
+        ${{ needs.fmt.result }} ${{ needs.clippy.result }} ${{ needs.test.result }}
+        ${{ needs.msrv.result }}
     steps:
       - run: |
-          echo "changes=$CHANGES code=$CODE fmt/clippy/test=$JOBS"
+          echo "changes=$CHANGES code=$CODE fmt/clippy/test/msrv=$JOBS"
           test "$CHANGES" = success
           case $CODE in
-            true) test "$JOBS" = "success success success" ;;
-            false) test "$JOBS" = "skipped skipped skipped" ;;
+            true) test "$JOBS" = "success success success success" ;;
+            false) test "$JOBS" = "skipped skipped skipped skipped" ;;
             *) exit 1 ;;
           esac

@@ -184,7 +184,7 @@ The socket starts `obsbot4linux.service` on the first connection. Without the
 units, `obsbot4linux watch` starts a daemon itself. From the tarball, put the
 binary on your `PATH` and copy `systemd/*` to `~/.config/systemd/user/`.
 
-Build from source (Rust 1.85 or newer):
+Build from source (Rust 1.88 or newer):
 
 ```sh
 cargo build --release --locked      # target/release/obsbot4linux
