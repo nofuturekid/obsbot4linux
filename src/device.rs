@@ -114,14 +114,11 @@ pub fn detect() -> Option<Detected> {
     let by_id = fs::read_dir("/dev/v4l/by-id")
         .into_iter()
         .flatten()
-        .flatten();
-    for entry in by_id {
-        if let Some(model) = models::from_by_id(&entry.file_name().to_string_lossy()) {
-            return Some(Detected {
-                model,
-                device: entry.path(),
-            });
-        }
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    if let Some(detected) = first_by_id(by_id) {
+        return Some(detected);
     }
 
     let mut paths: Vec<PathBuf> = fs::read_dir("/dev")
@@ -147,6 +144,28 @@ pub fn detect() -> Option<Detected> {
         }
     }
     None
+}
+
+/// The first supported camera among the by-id links, sorted: `read_dir` order is unspecified,
+/// so with two cameras the controlled one could change between runs.
+fn first_by_id(mut links: Vec<PathBuf>) -> Option<Detected> {
+    links.sort();
+    links.into_iter().find_map(|device| {
+        let model = models::from_by_id(&device.file_name()?.to_string_lossy())?;
+        Some(Detected { model, device })
+    })
+}
+
+/// The kernel fails GET_CUR and SET_CUR with ENOBUFS unless the buffer is exactly the
+/// selector's length, and both always pass [`XU_SIZE`] bytes.
+fn check_len(selector: u8, len: usize) -> Result<()> {
+    if len == XU_SIZE {
+        Ok(())
+    } else {
+        Err(Error::Unsupported(format!(
+            "selector {selector:#x} is {len} bytes"
+        )))
+    }
 }
 
 impl Device {
@@ -181,12 +200,7 @@ impl Device {
 
     /// GET_CUR on unit 2, after checking the buffer length like the vendor tools do.
     pub fn xu_get(&self, selector: u8) -> Result<[u8; XU_SIZE]> {
-        let len = self.xu_len(selector)?;
-        if len > XU_SIZE {
-            return Err(Error::Unsupported(format!(
-                "selector {selector:#x} is {len} bytes"
-            )));
-        }
+        check_len(selector, self.xu_len(selector)?)?;
         let mut data = [0u8; XU_SIZE];
         self.xu(selector, UVC_GET_CUR, &mut data)?;
         Ok(data)
@@ -197,12 +211,7 @@ impl Device {
         if payload.len() > XU_SIZE {
             return Err(Error::Invalid("payload longer than 60 bytes".into()));
         }
-        let len = self.xu_len(selector)?;
-        if XU_SIZE > len {
-            return Err(Error::Unsupported(format!(
-                "selector {selector:#x} is {len} bytes"
-            )));
-        }
+        check_len(selector, self.xu_len(selector)?)?;
         let mut data = [0u8; XU_SIZE];
         data[..payload.len()].copy_from_slice(payload);
         self.xu(selector, UVC_SET_CUR, &mut data)
@@ -236,5 +245,33 @@ impl Device {
             Ok(_) | Err(nix::errno::Errno::EINVAL) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_buffer_length_is_accepted() {
+        // a shorter or longer selector would fail in the kernel with a bare ENOBUFS
+        assert!(check_len(2, XU_SIZE).is_ok());
+        assert!(matches!(check_len(2, 32), Err(Error::Unsupported(_))));
+        assert!(matches!(check_len(2, 64), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn by_id_detection_does_not_depend_on_directory_order() {
+        let link = |serial: &str| {
+            PathBuf::from(format!(
+                "/dev/v4l/by-id/usb-Remo_Tech_Co.__Ltd._OBSBOT_Tiny_2_Lite_{serial}-video-index0"
+            ))
+        };
+        let other = PathBuf::from("/dev/v4l/by-id/usb-Logitech_BRIO-video-index0");
+        let picked = first_by_id(vec![other.clone(), link("B"), link("A")]).unwrap();
+        assert_eq!(picked.device, link("A"));
+        let picked = first_by_id(vec![link("A"), link("B"), other]).unwrap();
+        assert_eq!(picked.device, link("A"));
+        assert_eq!(first_by_id(Vec::new()), None);
     }
 }
