@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{self, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,7 +58,7 @@ fn write_line(w: &Writer, line: &Value) -> io::Result<()> {
 }
 
 /// The connected clients. Broadcasts go to all of them; a client that cannot be written to
-/// (gone, or not reading) is dropped.
+/// (gone, or not reading) is dropped and its connection shut down, so both ends see EOF.
 #[derive(Default)]
 pub struct Hub {
     clients: Mutex<Vec<(u64, Writer)>>,
@@ -97,7 +98,15 @@ impl Hub {
         let event = state_event(state);
         let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
-        clients.retain(|(_, w)| write_line(w, &event).is_ok());
+        clients.retain(|(_, w)| {
+            let ok = write_line(w, &event).is_ok();
+            if !ok {
+                // a timed-out write can leave half a line behind; nothing may follow it
+                let s = w.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = s.shutdown(Shutdown::Both);
+            }
+            ok
+        });
     }
 }
 
@@ -185,5 +194,30 @@ mod tests {
         assert_eq!(hub.clients.lock().unwrap().len(), 1);
         drop(hub);
         assert_eq!(BufReader::new(live).lines().count(), 2);
+    }
+
+    #[test]
+    fn a_client_that_does_not_read_is_disconnected() {
+        let hub = Hub::default();
+        let (srv, client) = UnixStream::pair().unwrap();
+        // serve_client's reader is a clone of the same socket
+        let reader = srv.try_clone().unwrap();
+        hub.add(srv).unwrap();
+        reader
+            .set_write_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        // larger than the socket buffer: the write times out because nobody reads
+        hub.broadcast(&json!("x".repeat(4 << 20)));
+        assert!(hub.clients.lock().unwrap().is_empty());
+
+        // both ends see EOF instead of waiting forever
+        let timeout = Some(Duration::from_secs(1));
+        reader.set_read_timeout(timeout).unwrap();
+        let mut line = String::new();
+        assert_eq!(BufReader::new(reader).read_line(&mut line).unwrap(), 0);
+        client.set_read_timeout(timeout).unwrap();
+        let mut rest = Vec::new();
+        std::io::Read::read_to_end(&mut &client, &mut rest).unwrap();
+        assert!(!rest.ends_with(b"\n"), "the partial line is the last data");
     }
 }

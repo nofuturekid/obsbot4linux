@@ -7,15 +7,19 @@
 use crate::cli::{Cli, Cmd, execute};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
+use nix::errno::Errno;
+use nix::fcntl::{Flock, FlockArg};
+use nix::sys::stat::{Mode, umask};
 use obsbot4linux::camera::{CAPABILITIES, Camera, ZoneInfo};
 use obsbot4linux::commands::AiMode;
 use obsbot4linux::error::{Error, Result};
 use obsbot4linux::state::{self, State};
 use obsbot4linux::streaming;
 use serde_json::{Value, json};
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader};
 use std::os::fd::FromRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -312,28 +316,59 @@ fn inherited_listener() -> Option<UnixListener> {
     (pid == std::process::id() && fds >= 1).then(|| unsafe { UnixListener::from_raw_fd(3) })
 }
 
-fn bind() -> Result<UnixListener> {
+/// The listener and, when this process bound it, the lock that keeps a second daemon from
+/// replacing the socket (held as long as the daemon runs).
+fn bind() -> Result<(UnixListener, Option<Flock<File>>)> {
     if let Some(l) = inherited_listener() {
-        return Ok(l);
+        return Ok((l, None));
     }
     let path = socket_path().ok_or_else(|| {
         Error::Invalid("neither XDG_RUNTIME_DIR nor OBSBOT4LINUX_SOCKET is set".into())
     })?;
-    if UnixStream::connect(&path).is_ok() {
+    let (listener, lock) = bind_at(&path)?;
+    Ok((listener, Some(lock)))
+}
+
+/// Takes `<socket>.lock`, then replaces a stale socket. Two daemons started at once (two
+/// `watch` at login) would otherwise both find no listener and the second unlink the first's.
+fn bind_at(path: &Path) -> Result<(UnixListener, Flock<File>)> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock_path)?;
+    let lock = match Flock::lock(lock, FlockArg::LockExclusiveNonblock) {
+        Ok(lock) => lock,
+        Err((_, Errno::EWOULDBLOCK)) => {
+            return Err(Error::Invalid(format!(
+                "another daemon holds {}",
+                Path::new(&lock_path).display()
+            )));
+        }
+        Err((_, e)) => return Err(std::io::Error::from(e).into()),
+    };
+    if UnixStream::connect(path).is_ok() {
         return Err(Error::Invalid(format!(
             "a daemon is already listening on {}",
             path.display()
         )));
     }
-    let _ = std::fs::remove_file(&path); // stale socket of a dead daemon
-    let listener = UnixListener::bind(&path)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
+    let _ = std::fs::remove_file(path); // stale socket of a dead daemon
+    // no window with a socket others can connect to; still single-threaded here
+    let old = umask(Mode::from_bits_truncate(0o077));
+    let listener = UnixListener::bind(path);
+    umask(old);
+    let listener = listener?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok((listener, lock))
 }
 
 pub fn run() -> Result<()> {
     state::enable_cache();
-    let listener = bind()?;
+    let (listener, _lock) = bind()?;
     let hub = Arc::new(Hub::default());
     let (tx, rx) = mpsc::channel();
     let worker = Worker {
@@ -344,12 +379,29 @@ pub fn run() -> Result<()> {
         dirty: false,
         up: None,
     };
-    std::thread::spawn(move || worker.run(rx));
-    for stream in listener.incoming().flatten() {
-        let (hub, tx) = (hub.clone(), tx.clone());
-        std::thread::spawn(move || serve_client(stream, hub, tx));
-    }
-    Ok(())
+    let worker = std::thread::spawn(move || worker.run(rx));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let (hub, tx) = (hub.clone(), tx.clone());
+                    std::thread::spawn(move || serve_client(stream, hub, tx));
+                }
+                // e.g. EMFILE: retrying at once would spin
+                Err(e) => {
+                    eprintln!("obsbot4linux: accept: {e}");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    });
+    // without the worker nothing answers; exit so that systemd (Restart=on-failure) restarts us
+    let how = if worker.join().is_err() {
+        "panicked"
+    } else {
+        "stopped"
+    };
+    Err(Error::Invalid(format!("the camera worker {how}")))
 }
 
 #[cfg(test)]
@@ -374,5 +426,43 @@ mod tests {
         assert_ne!(stable(&at(true, 0.1)), stable(&at(false, 0.1)));
         assert_ne!(stable(&at(true, 0.1)), stable(&json!({"target": null})));
         assert_eq!(unavailable()["target"], Value::Null);
+    }
+
+    fn socket_in(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("o4l-sock-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("obsbot4linux.sock")
+    }
+
+    #[test]
+    fn a_second_daemon_does_not_take_over_the_socket() {
+        let path = socket_in("second");
+        // a daemon that holds the lock but has not bound yet: no listener to find
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let file = File::create(&lock_path).unwrap();
+        let starting = Flock::lock(file, FlockArg::LockExclusiveNonblock).unwrap();
+        let err = bind_at(&path).unwrap_err().to_string();
+        assert!(err.contains("another daemon holds"), "{err}");
+        assert!(!path.exists(), "the loser creates no socket");
+        drop(starting);
+        let (listener, _lock) = bind_at(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        UnixStream::connect(&path).unwrap();
+        listener.accept().unwrap();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_stale_socket_is_replaced() {
+        let path = socket_in("stale");
+        drop(bind_at(&path).unwrap()); // a dead daemon leaves its socket and lock file
+        assert!(path.exists() && UnixStream::connect(&path).is_err());
+        let (listener, _lock) = bind_at(&path).unwrap();
+        UnixStream::connect(&path).unwrap();
+        listener.accept().unwrap();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
