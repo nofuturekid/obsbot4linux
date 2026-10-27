@@ -13,8 +13,8 @@ env:
   RUSTUP_TOOLCHAIN: '1.99.1'
 
 jobs:
-  # Fails at once unless the tagged commit is on main, Cargo.toml and CHANGELOG.md match
-  # the tag and ci.yml tests with the same toolchain.
+  # Fails at once unless the tagged commit is on main, Cargo.toml, PKGBUILD and CHANGELOG.md
+  # match the tag and ci.yml tests with the same toolchain.
   verify:
     runs-on: ubuntu-22.04
     steps:

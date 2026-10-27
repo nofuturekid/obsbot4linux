@@ -1,7 +1,8 @@
-# Builds the local checkout this file lives in. The release workflow sets
-# OBSBOT4LINUX_TARBALL to a source tarball of the tag instead.
+# Builds the committed HEAD of the checkout this file lives in (uncommitted changes are left
+# out). The release workflow sets OBSBOT4LINUX_TARBALL to a source tarball of the tag instead.
 pkgname=obsbot4linux
-pkgver=0.1.0
+# Cargo.toml's version; scripts/changelog-section.sh fails the release unless they match.
+pkgver=0.6.0
 pkgrel=1
 pkgdesc='Control OBSBOT webcams (Tiny 2 Lite) from the console, with a daemon for the DMS widget'
 arch=('x86_64' 'aarch64')
@@ -13,7 +14,8 @@ options=('!debug')
 
 if [[ -n ${OBSBOT4LINUX_TARBALL:-} ]]; then
   source=("$pkgname-$pkgver.tar.gz::file://$OBSBOT4LINUX_TARBALL")
-  sha256sums=("$(sha256sum "$OBSBOT4LINUX_TARBALL" | cut -d' ' -f1)")
+  # A local file the caller just made; there is no published checksum to check it against.
+  sha256sums=('SKIP')
   _src="$pkgname-$pkgver"
 else
   makedepends+=('git')

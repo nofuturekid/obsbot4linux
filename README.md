@@ -27,12 +27,14 @@ The camera is opened only for each command or poll and closed again. Controlling
 the camera does not need exclusive access, so video calls and other programs keep
 streaming while `obsbot4linux` reads and changes settings.
 
-All control goes through ioctls on `/dev/video0`: the vendor extension unit
-(framed commands, queries, status block) and the UVC camera terminal (image
-controls). The gimbal moves with OBSBOT Center's pose command `0x6444`, not the
-UVC pan/tilt control, which ignores a target near the centre while the gimbal is
-further away. What the camera does not report (the last pose sent, the exposure
-mode) the daemon remembers.
+All control goes through ioctls on the camera's video node, as detection finds it
+(see [Supported cameras](#supported-cameras)): the `/dev/v4l/by-id/...-video-index0` link,
+else the first `/dev/videoN` with a matching V4L2 card name; with several supported cameras
+connected, the first one found. The ioctls reach the vendor extension unit (framed commands,
+queries, status block) and the UVC camera terminal (image controls). The gimbal moves with
+OBSBOT Center's pose command `0x6444`, not the UVC pan/tilt control, which ignores a target
+near the centre while the gimbal is further away. What the camera does not report (the last
+pose sent, the exposure mode) the daemon remembers.
 
 ## Status
 
@@ -164,13 +166,14 @@ camera is at hand to capture and test (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 Download a package from the
 [releases](https://github.com/nofuturekid/obsbot4linux/releases) (x86_64 and aarch64;
-`SHA256SUMS` lists the checksums), then install it:
+`SHA256SUMS` lists the checksums), then install it, with `VER` set to the release's version
+(for example `VER=0.6.0`):
 
 ```sh
-sudo apt install ./obsbot4linux_0.1.0_amd64.deb              # Debian, Ubuntu (arm64 too)
-sudo dnf install ./obsbot4linux-0.1.0-1.x86_64.rpm           # Fedora, openSUSE: zypper install
-sudo pacman -U obsbot4linux-0.1.0-1-x86_64.pkg.tar.zst       # Arch Linux, Arch Linux ARM (aarch64)
-tar -xzf obsbot4linux-0.1.0-x86_64-linux.tar.gz              # tarball: binary + systemd/ units
+sudo apt install ./obsbot4linux_${VER}_amd64.deb             # Debian, Ubuntu (arm64 too)
+sudo dnf install ./obsbot4linux-$VER-1.x86_64.rpm            # Fedora, openSUSE: zypper install
+sudo pacman -U obsbot4linux-$VER-1-x86_64.pkg.tar.zst        # Arch Linux, Arch Linux ARM (aarch64)
+tar -xzf obsbot4linux-$VER-x86_64-linux.tar.gz               # tarball: binary + systemd/ units
 ```
 
 The packages install `/usr/bin/obsbot4linux` and the user units, and do not enable
@@ -182,13 +185,21 @@ systemctl --user enable --now obsbot4linux.socket
 
 The socket starts `obsbot4linux.service` on the first connection. Without the
 units, `obsbot4linux watch` starts a daemon itself. From the tarball, put the
-binary on your `PATH` and copy `systemd/*` to `~/.config/systemd/user/`.
+binary on your `PATH` and copy `systemd/*` to `~/.config/systemd/user/`. The service runs
+`/usr/bin/obsbot4linux`; for a binary elsewhere, `systemctl --user edit obsbot4linux.service`
+and point it there (the empty `ExecStart=` clears the packaged one):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=%h/.local/bin/obsbot4linux daemon
+```
 
 Build from source (Rust 1.88 or newer):
 
 ```sh
 cargo build --release --locked      # target/release/obsbot4linux
-cd packaging/arch && makepkg -si    # Arch package of this checkout
+cd packaging/arch && makepkg -si    # Arch package of the committed HEAD
 ```
 
 ## Licence

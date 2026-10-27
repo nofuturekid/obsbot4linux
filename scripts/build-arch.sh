@@ -22,6 +22,9 @@ chmod -R a+rwX "$work"
 # calling user (HOST_UID/HOST_GID): their uids differ on CI runners, and without the
 # chown the cleanup trap above cannot delete the files (and /tmp is sticky).
 # PKGEXT is set because Arch Linux ARM's makepkg.conf still defaults to .pkg.tar.xz.
+# Arch does not support partial upgrades, so installing cargo needs -Syu. That pulls the
+# current packages from the mirrors: the image digest pins only the starting point, the
+# build is not reproducible.
 docker run --rm -v "$work:/work" -e VER="$ver" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$image" sh -ec '
   trap "chown -R \$HOST_UID:\$HOST_GID /work" EXIT

@@ -53,5 +53,5 @@ assets = [
     { source = "packaging/systemd/obsbot4linux.socket", dest = "/usr/lib/systemd/user/obsbot4linux.socket", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/obsbot4linux/README.md", mode = "644", doc = true },
     { source = "CHANGELOG.md", dest = "/usr/share/doc/obsbot4linux/CHANGELOG.md", mode = "644", doc = true },
-    { source = "LICENSE", dest = "/usr/share/licenses/obsbot4linux/LICENSE", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/obsbot4linux/LICENSE", mode = "644" },
 ]
