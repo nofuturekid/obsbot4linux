@@ -17,7 +17,9 @@ One program, `obsbot4linux`:
   it polls the camera in the background to notice changes the camera makes itself
   (a gesture switching AI tracking on, a factory reset, unplugging).
 - **CLI** (`obsbot4linux status`, `obsbot4linux fov wide`, `obsbot4linux gimbal --pan 10`, ... with
-  `--json`) talks to the daemon, or to the camera directly when no daemon runs.
+  `--json`) talks to the daemon, or to the camera directly when no daemon runs (or with
+  `--direct`). Processes that talk to the camera take turns through a lock on its video node,
+  waiting up to 5 s; video applications are not affected.
 - **`obsbot4linux watch`** keeps a connection open for the widget: state updates in,
   commands out, as JSON lines on stdout / stdin.
 

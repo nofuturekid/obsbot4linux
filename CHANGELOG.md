@@ -3,6 +3,16 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.2] - 2026-10-27
+
+### Fixed
+
+- The daemon and a `--direct` call, or two direct calls, could talk to the camera at the same
+  time. The vendor unit has one answer buffer and answers are matched by sequence number only,
+  so one process could take the other's answer or time out. Every camera handle now holds an
+  exclusive lock on the video node; the others wait up to 5 s ("the camera is busy" after that).
+  Video applications do not take the lock and are not affected (#45).
+
 ## [0.7.1] - 2026-10-27
 
 ### Added

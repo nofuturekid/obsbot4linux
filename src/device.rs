@@ -4,14 +4,23 @@
 //! Device lookup and ioctls: UVC extension-unit queries and V4L2 controls.
 //!
 //! The device is opened per operation and closed on drop, so streaming applications keep
-//! working: control ioctls do not need exclusive access.
+//! working: control ioctls do not need exclusive access. Each handle holds an exclusive flock
+//! on the node, so two obsbot4linux processes (the daemon and a `--direct` call, or two direct
+//! calls) take turns: the vendor unit has one answer buffer, and answers are matched by sequence
+//! number only. flock is advisory; streaming applications do not take it and are not held up.
 
 use crate::error::{Error, Result};
 use crate::models::{self, Model};
+use nix::errno::Errno;
+use nix::fcntl::{Flock, FlockArg};
 use nix::{ioctl_read, ioctl_readwrite};
 use std::fs::{self, File};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// How long `Device::open` waits for another obsbot4linux process to release the camera.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 const UVC_SET_CUR: u8 = 0x01;
 const UVC_GET_CUR: u8 = 0x81;
@@ -90,8 +99,24 @@ pub struct Detected {
 }
 
 pub struct Device {
-    file: File,
+    file: Flock<File>,
     detected: Detected,
+}
+
+/// Takes an exclusive flock on `file`, retrying until `wait` has passed.
+fn lock_exclusive(mut file: File, wait: Duration) -> Result<Flock<File>> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => return Ok(lock),
+            Err((f, Errno::EWOULDBLOCK)) if Instant::now() < deadline => {
+                file = f;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err((_, Errno::EWOULDBLOCK)) => return Err(Error::Busy),
+            Err((_, e)) => return Err(Error::Io(e.into())),
+        }
+    }
 }
 
 fn card_name(file: &File) -> Option<(String, u32)> {
@@ -172,7 +197,7 @@ impl Device {
     /// Opens the first supported camera.
     pub fn open() -> Result<Self> {
         let detected = detect().ok_or(Error::NoCamera)?;
-        let file = File::open(&detected.device)?;
+        let file = lock_exclusive(File::open(&detected.device)?, LOCK_WAIT)?;
         Ok(Self { file, detected })
     }
 
@@ -251,6 +276,30 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_handle_waits_for_the_first() {
+        // the daemon and a --direct call must not exchange frames at the same time
+        let path = std::env::temp_dir().join(format!("o4l-lock-{}", std::process::id()));
+        File::create(&path).unwrap();
+        let first = lock_exclusive(File::open(&path).unwrap(), LOCK_WAIT).unwrap();
+        let busy = lock_exclusive(File::open(&path).unwrap(), Duration::from_millis(100));
+        assert!(
+            matches!(busy, Err(Error::Busy)),
+            "a held camera is not shared"
+        );
+        let waiting = {
+            let path = path.clone();
+            std::thread::spawn(move || lock_exclusive(File::open(&path).unwrap(), LOCK_WAIT))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        drop(first);
+        assert!(
+            waiting.join().unwrap().is_ok(),
+            "released on drop, the next one gets it"
+        );
+        fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn only_the_exact_buffer_length_is_accepted() {

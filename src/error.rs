@@ -20,6 +20,8 @@ pub enum Error {
     Rejected(u16, u16),
     #[error("{0}")]
     Unsupported(String),
+    #[error("the camera is busy: another obsbot4linux process held it for 5 s")]
+    Busy,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
