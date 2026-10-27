@@ -3,6 +3,26 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1] - 2026-10-27
+
+### Added
+
+- `limits` in the status and the daemon's state events: the pan, tilt and zoom ranges that
+  `gimbal`, the poses and `zone area` accept, so clients need not hardcode them (#58).
+
+### Changed
+
+- `zone area` takes the gimbal range, pan -150..150 and tilt -70..90, instead of OBSBOT Center's
+  -100..100 and -30..30. Measured on a Tiny 2 Lite: zone tracking keeps to a tilt of 45 (stopped
+  at 48.7; 90.7 without zone). Pan beyond 100 is only confirmed by the camera's read-back (#58).
+
+### Fixed
+
+- Tilt below -75 puts the Tiny 2 Lite to sleep (privacy), and woken there it returns to that pose
+  and sleeps again. `gimbal` and the poses now stop at tilt -70, OBSBOT's controllable limit,
+  instead of -89. The "-90 reads back as +90" noted in 0.7.0 was this sleep. The README shows the
+  way out of the loop (#58).
+
 ## [0.7.0] - 2026-10-27
 
 ### Added
