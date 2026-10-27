@@ -36,6 +36,11 @@ OBSBOT Center's pose command `0x6444`, not the UVC pan/tilt control, which ignor
 near the centre while the gimbal is further away. What the camera does not report (the last
 pose sent, the exposure mode) the daemon remembers.
 
+`gimbal` and the poses of presets, start and return positions take pan -150..150 and tilt
+-70..90. Tilted below about -75 the Tiny 2 Lite goes to sleep (privacy) and parks at -85; woken
+there, it returns to that pose and falls asleep again. Way out: `obsbot4linux wake`, then
+`obsbot4linux gimbal --tilt 0` a few times within the next seconds.
+
 ## Status
 
 The `obsbot4linux` CLI (library plus binary) controls the camera directly, with
@@ -48,8 +53,8 @@ Builds on the Tiny 2 Lite support written for
 
 ## Supported cameras
 
-| Model | USB id | Status |
-| --- | --- | --- |
+| Model              | USB id      | Status                                   |
+| ------------------ | ----------- | ---------------------------------------- |
 | OBSBOT Tiny 2 Lite | `3564:fef9` | Full support, tested on firmware 6.2.8.1 |
 
 Detection only enumerates (`/dev/v4l/by-id`, else the V4L2 card name) and sends nothing to the
@@ -71,7 +76,12 @@ none). Without a camera they are `false` and `[]`. The daemon checks every secon
 event as soon as they change; no camera command is involved.
 
 ```json
-{"model": "Tiny 2 Lite", "streaming": true, "streaming_apps": ["ffmpeg"], "...": "..."}
+{
+  "model": "Tiny 2 Lite",
+  "streaming": true,
+  "streaming_apps": ["ffmpeg"],
+  "...": "..."
+}
 ```
 
 `streaming` is the reliable one and comes from the kernel. uvcvideo lets only one handle own
@@ -94,7 +104,7 @@ While AI tracking is on, `obsbot4linux --json status` and the state events of `o
 carry `target` (query `0x01c4`): whether the camera currently has someone to follow.
 
 ```json
-{"target": {"detected": true, "box": [0.174, 0.182, 0.677, 0.985]}}
+{ "target": { "detected": true, "box": [0.174, 0.182, 0.677, 0.985] } }
 ```
 
 - `detected: true`: the camera has a target (status LED blue).
@@ -108,6 +118,21 @@ size each one is has not been established. Plain `obsbot4linux status` prints on
 while tracking is on, and sends a state event when `detected` changes. Box movement alone sends
 none; the latest box is included whenever an event goes out for another reason. Capability: `target`.
 
+### Limits
+
+`limits` in the status says what `gimbal`, the preset, start and return poses and `zone area`
+accept, as [min, max] (pan positive = camera left, tilt positive = up):
+
+```json
+{
+  "limits": {
+    "pan": [-150.0, 150.0],
+    "tilt": [-70.0, 90.0],
+    "zoom": [1.0, 4.0]
+  }
+}
+```
+
 ### Zone tracking and start pose
 
 `obsbot4linux --json status` and the state events of `obsbot4linux watch` carry the zone
@@ -116,9 +141,20 @@ settings, read from the camera (queries `0x4c44` / `0x4cc4` / `0x4d44` / `0x4dc4
 positive = camera left, tilt positive = up.
 
 ```json
-{"zone": {"pan_min": -10.0, "pan_max": 10.0, "tilt_min": -5.0, "tilt_max": 5.0, "follow": true,
-          "return": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0}},
- "state": {"zone_follow": true, "startup": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": null}}}
+{
+  "zone": {
+    "pan_min": -10.0,
+    "pan_max": 10.0,
+    "tilt_min": -5.0,
+    "tilt_max": 5.0,
+    "follow": true,
+    "return": { "pan": 0.0, "tilt": 0.0, "zoom": 1.0 }
+  },
+  "state": {
+    "zone_follow": true,
+    "startup": { "pan": 0.0, "tilt": 0.0, "zoom": 1.0, "preset": null }
+  }
+}
 ```
 
 `zone` is `null` when the camera does not answer. `state.zone_follow` and `state.startup` keep
@@ -140,8 +176,17 @@ left the tracking range. It and the hand area are read from the camera (queries 
 positive = up):
 
 ```json
-{"hand": {"area": {"pan_min": -45.0, "pan_max": 45.0, "tilt_min": -30.0, "tilt_max": 30.0},
-          "return": {"pan": 20.1, "tilt": 4.9, "zoom": 1.0}}}
+{
+  "hand": {
+    "area": {
+      "pan_min": -45.0,
+      "pan_max": 45.0,
+      "tilt_min": -30.0,
+      "tilt_max": 30.0
+    },
+    "return": { "pan": 20.1, "tilt": 4.9, "zoom": 1.0 }
+  }
+}
 ```
 
 `return` is `null` while none is set, and `hand` is `null` when the camera does not answer. The

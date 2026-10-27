@@ -57,7 +57,7 @@ pub fn check_slot(slot: u8) -> Result<()> {
 fn pose_data(lead: u32, pose: Pose, last: f32, what: &str) -> Result<Vec<u8>> {
     if !(gimbal_angles_ok(pose.pan, pose.tilt) && (1.0..=MAX_ZOOM).contains(&pose.zoom)) {
         return Err(Error::Invalid(format!(
-            "{what} needs pan -150..150, tilt -89..90 and zoom 1.0-4.0"
+            "{what} needs pan -150..150, tilt -70..90 and zoom 1.0-4.0"
         )));
     }
     let mut data = lead.to_le_bytes().to_vec();
@@ -423,7 +423,8 @@ mod tests {
             (150.5, 0.0, 1.0),
             (400.0, 0.0, 1.0),
             (0.0, 90.5, 1.0),
-            (0.0, -89.5, 1.0),
+            (0.0, -70.5, 1.0),
+            (0.0, -76.0, 1.0),
             (0.0, -1000.0, 1.0),
         ];
         for (pan, tilt, zoom) in bad {
@@ -434,7 +435,7 @@ mod tests {
             assert!(zone_return_set(p, 0).is_err(), "zone return {p:?}");
             assert!(hand_return_set(p, 0).is_err(), "hand return {p:?}");
         }
-        for (pan, tilt) in [(-150.0, 90.0), (150.0, -89.0)] {
+        for (pan, tilt) in [(-150.0, 90.0), (150.0, -70.0)] {
             let edge = Pose {
                 pan,
                 tilt,

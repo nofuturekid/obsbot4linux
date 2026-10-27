@@ -177,12 +177,12 @@ pub enum ZoneCmd {
     Follow {
         state: OnOff,
     },
-    /// Area the zone tracking stays in, in degrees. Full area: --pan -100 100 --tilt -30 30
+    /// Area the zone tracking stays in, in degrees. Full area: --pan -150 150 --tilt -70 90
     Area {
-        /// Pan range, MIN MAX, positive = camera left (-100..100)
+        /// Pan range, MIN MAX, positive = camera left (-150..150)
         #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
         pan: Vec<f32>,
-        /// Tilt range, MIN MAX, positive = up (-30..30)
+        /// Tilt range, MIN MAX, positive = up (-70..90)
         #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
         tilt: Vec<f32>,
     },

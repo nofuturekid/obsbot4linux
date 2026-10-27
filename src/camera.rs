@@ -132,7 +132,24 @@ pub struct FullStatus {
     /// Hand tracking area and return position read from the camera; None when it did not answer.
     pub hand: Option<Hand>,
     pub capabilities: Vec<&'static str>,
+    /// What `gimbal`, the poses and `zone area` accept, so clients need not hardcode it.
+    pub limits: Limits,
 }
+
+/// `limits` in the status: [min, max] in obsbot4linux's angles (pan positive = camera left, tilt
+/// positive = up) and the zoom factor.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Limits {
+    pub pan: [f32; 2],
+    pub tilt: [f32; 2],
+    pub zoom: [f32; 2],
+}
+
+pub const LIMITS: Limits = Limits {
+    pan: [-GIMBAL_PAN_LIMIT, GIMBAL_PAN_LIMIT],
+    tilt: [GIMBAL_TILT_MIN, GIMBAL_TILT_MAX],
+    zoom: [1.0, MAX_ZOOM],
+};
 
 /// `state` in the status: what obsbot4linux remembers (state file), plus `zone_follow` and
 /// `startup`, which are read from the camera (null when it did not answer). Kept under `state`
@@ -419,6 +436,7 @@ impl Camera {
             zone,
             hand,
             capabilities: CAPABILITIES.to_vec(),
+            limits: LIMITS,
         })
     }
 
@@ -854,6 +872,7 @@ mod full_status_tests {
             zone: None,
             hand: None,
             capabilities: CAPABILITIES.to_vec(),
+            limits: LIMITS,
         };
         let v = serde_json::to_value(full).unwrap();
         assert_eq!(v["model"], "Tiny 2 Lite");
@@ -864,6 +883,11 @@ mod full_status_tests {
         // zone_follow stays under state, next to the remembered values
         assert_eq!(v["state"]["zone_follow"], true);
         assert!(v["state"]["startup"].is_null() && v["zone"].is_null() && v["hand"].is_null());
+        // the widget takes its d-pad and zone slider ranges from here
+        assert_eq!(
+            v["limits"],
+            serde_json::json!({"pan": [-150.0, 150.0], "tilt": [-70.0, 90.0], "zoom": [1.0, 4.0]})
+        );
         let t = Target {
             detected: true,
             coords: [0.25, 0.5, 0.75, 1.0],

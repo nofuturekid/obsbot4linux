@@ -194,14 +194,12 @@ pub fn zone_tracking(on: bool, seq1: u16, seq2: u16) -> [[u8; FRAME_SIZE]; 2] {
         frame(TRACKING, 0x5084, &[on as u8], seq2),
     ]
 }
-/// Zone tracking area, in the camera's own angles: yaw positive = camera left, pitch positive =
-/// down (as 0x6444). OBSBOT Center's full area is yaw -100..100, pitch -30..30 (captures 11, 18).
-pub const ZONE_YAW_LIMIT: f32 = 100.0;
-pub const ZONE_PITCH_LIMIT: f32 = 30.0;
 /// Gimbal range in obsbot4linux's angles (pan positive = left, tilt positive = up). Measured on a
-/// Tiny 2 Lite: pan stops at about ±148; tilt reaches 90 and -89, -90 reads back as +90.
+/// Tiny 2 Lite: pan stops at about ±148, tilt reaches 90. Below -75 the camera goes to sleep
+/// (privacy) and parks at -85; on wake it returns to that pose and sleeps again. -70 is
+/// OBSBOT's controllable limit (spec: pan ±140, tilt 30 to -70; mechanical ±150, ±90).
 pub const GIMBAL_PAN_LIMIT: f32 = 150.0;
-pub const GIMBAL_TILT_MIN: f32 = -89.0;
+pub const GIMBAL_TILT_MIN: f32 = -70.0;
 pub const GIMBAL_TILT_MAX: f32 = 90.0;
 /// Whether pan and tilt (obsbot4linux's angles) are within the gimbal range. Rejects NaN, inf and
 /// -1000, which means "keep this axis" in 0x6444.
@@ -214,12 +212,17 @@ pub fn zone_area(
     pitch: (f32, f32),
     seqs: [u16; 4],
 ) -> Result<[[u8; FRAME_SIZE]; 4]> {
-    let ok = |(lo, hi): (f32, f32), limit: f32| {
-        lo.is_finite() && hi.is_finite() && lo < hi && lo >= -limit && hi <= limit
+    // In the camera's own angles: yaw positive = camera left, pitch positive = down (as 0x6444).
+    // OBSBOT Center offers yaw -100..100, pitch -30..30 (captures 11, 18); the camera stores
+    // more, and zone tracking measured on a Tiny 2 Lite keeps to a tilt of 45 (stopped at 48.7,
+    // 90.7 without zone). So the area takes the gimbal range.
+    let ok = |(lo, hi): (f32, f32), (min, max): (f32, f32)| {
+        lo.is_finite() && hi.is_finite() && lo < hi && lo >= min && hi <= max
     };
-    if !ok(yaw, ZONE_YAW_LIMIT) || !ok(pitch, ZONE_PITCH_LIMIT) {
+    let pitch_range = (-GIMBAL_TILT_MAX, -GIMBAL_TILT_MIN);
+    if !ok(yaw, (-GIMBAL_PAN_LIMIT, GIMBAL_PAN_LIMIT)) || !ok(pitch, pitch_range) {
         return Err(invalid(
-            "zone area: min must be below max, pan within -100..100, tilt within -30..30",
+            "zone area: min must be below max, pan within -150..150, tilt within -70..90",
         ));
     }
     Ok([
@@ -270,7 +273,7 @@ pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8
         || !gimbal_angles_ok(yaw.unwrap_or(0.0), pitch.map_or(0.0, |p| -p))
     {
         return Err(invalid(
-            "gimbal pose needs pan -150..150 and/or tilt -89..90",
+            "gimbal pose needs pan -150..150 and/or tilt -70..90",
         ));
     }
     let mut data = Vec::with_capacity(12);
@@ -416,11 +419,14 @@ mod tests {
     }
 
     #[test]
-    fn zone_area_rejects_what_center_cannot_set() {
-        // an inverted or too wide area would leave the camera without a usable zone
+    fn zone_area_rejects_what_the_gimbal_cannot_reach() {
+        // an inverted or too wide area would leave the camera without a usable zone; pitch is the
+        // camera's (down positive), so tilt -70 is pitch 70: below it the camera goes to sleep
         assert!(zone_area((10.0, -10.0), (-30.0, 30.0), [0; 4]).is_err());
-        assert!(zone_area((-120.0, 100.0), (-30.0, 30.0), [0; 4]).is_err());
-        assert!(zone_area((-100.0, 100.0), (-30.0, 45.0), [0; 4]).is_err());
+        assert!(zone_area((-150.5, 100.0), (-30.0, 30.0), [0; 4]).is_err());
+        assert!(zone_area((-100.0, 100.0), (-30.0, 70.5), [0; 4]).is_err());
+        assert!(zone_area((-100.0, 100.0), (-90.5, 30.0), [0; 4]).is_err());
+        assert!(zone_area((-150.0, 150.0), (-90.0, 70.0), [0; 4]).is_ok());
     }
 
     #[test]
@@ -464,7 +470,7 @@ mod tests {
     #[test]
     fn gimbal_pose_rejects_what_the_camera_would_ignore() {
         // -1000 on the wire keeps the axis, so these would report success without moving it.
-        // Pitch is the wire's (down positive): user tilt 90 up is pitch -90, -89 is pitch 89.
+        // Pitch is the wire's (down positive): user tilt 90 up is pitch -90, -70 is pitch 70.
         assert!(gimbal_pose(Some(-1000.0), None, 0).is_err());
         assert!(gimbal_pose(Some(1000.0), None, 0).is_err());
         assert!(gimbal_pose(None, Some(-1000.0), 0).is_err());
@@ -473,12 +479,13 @@ mod tests {
         assert!(gimbal_pose(Some(-150.5), None, 0).is_err());
         assert!(gimbal_pose(None, Some(-90.5), 0).is_err());
         assert!(
-            gimbal_pose(None, Some(89.5), 0).is_err(),
-            "tilt -90 flips to +90"
+            gimbal_pose(None, Some(76.0), 0).is_err(),
+            "below tilt -75 the camera goes to sleep"
         );
+        assert!(gimbal_pose(None, Some(70.5), 0).is_err());
         assert!(gimbal_pose(None, Some(f32::INFINITY), 0).is_err());
         assert!(gimbal_pose(Some(150.0), Some(-90.0), 0).is_ok());
-        assert!(gimbal_pose(Some(-150.0), Some(89.0), 0).is_ok());
+        assert!(gimbal_pose(Some(-150.0), Some(70.0), 0).is_ok());
     }
 
     #[test]
