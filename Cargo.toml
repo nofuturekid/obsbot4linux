@@ -1,6 +1,6 @@
 [package]
 name = "obsbot4linux"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Control OBSBOT webcams on Linux from the console, with a daemon for the DMS widget"
