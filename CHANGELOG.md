@@ -3,6 +3,51 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-10-27
+
+### Added
+
+- A daemon that `watch` starts itself appends its errors to `daemon.log` next to `state.json`;
+  "cannot reach the daemon" names that file (#42).
+- Release artifacts carry a build provenance attestation (#36).
+
+### Changed
+
+- `gimbal`, `preset save`, `startup set` and `zone`/`hand return-here` reject poses outside
+  pan -150..150 and tilt -89..90 (the measured mechanical range of the Tiny 2 Lite; -90 reads back
+  as +90) and zoom 1.0-4.0, instead of sending them (#32, #39).
+- `watch` exits with 1 when the daemon closes the connection, and with 0 when stdin or stdout
+  close (#42).
+- The daemon exits non-zero when its camera worker stops, so systemd's `Restart=on-failure`
+  applies (#42).
+- The daemon opens the camera once per tick instead of three to four times (#46).
+- Rust 1.88 is the minimum version (`rust-version`), and CI tests with it. CI and release builds
+  use a pinned toolchain (#33, #36).
+- Releases are only built from commits on `main`, and run fmt and clippy before the build (#35).
+- `packaging/arch/PKGBUILD` carries the release version; a release fails when it differs from
+  the tag (#43).
+
+### Fixed
+
+- A `watch` client that stalled during a broadcast stayed connected but got no more events; its
+  connection is now closed, so it reconnects (#30).
+- Two daemons started at the same time could both bind the socket and poll the camera. A lock
+  next to the socket now keeps it to one; the socket is created with mode 0600 from the start
+  (#31).
+- `gimbal --tilt 1000` or `--pan -1000` became "keep this axis" on the wire and still reported
+  success (#32).
+- `auto-sleep off` with a stored time of 0 s left auto-sleep on; it now sends off with 600 s
+  (measured) (#37).
+- A selector of the wrong length failed with a raw `ENOBUFS` instead of a clear error (#38).
+- `--json status` and `preset list` no longer make the daemon re-read everything and broadcast
+  (#40).
+- `--direct` writes to `state.json` are no longer overwritten by the daemon's cache, and the file
+  is written with a unique, synced temp file (#41).
+- With two cameras attached, the same one is picked every time (#45).
+- The rpm installs `LICENSE` also with `--excludedocs` (#43).
+- README: Rust version, install examples for the current release, a systemd drop-in for a binary
+  outside `/usr/bin`, and the device node that is actually used (#33, #34, #44).
+
 ## [0.6.0] - 2026-10-25
 
 ### Added
