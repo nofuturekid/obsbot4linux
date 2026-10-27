@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "obsbot4linux"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "clap",
  "hex",
