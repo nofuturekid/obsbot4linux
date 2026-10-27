@@ -432,14 +432,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unavailable_state_has_null_model_and_device() {
-        let v = unavailable();
-        assert_eq!(v["available"], false);
-        assert!(v["model"].is_null() && v["device"].is_null());
-        assert!(v.as_object().unwrap().contains_key("model"));
-        assert!(v.as_object().unwrap().contains_key("device"));
-        assert_eq!(v["streaming"], false);
-        assert_eq!(v["streaming_apps"], json!([]));
+    fn a_lost_camera_is_announced_once_with_null_model_and_device() {
+        let hub = Arc::new(Hub::default());
+        let (srv, client) = UnixStream::pair().unwrap();
+        hub.add(srv).unwrap();
+        let mut worker = Worker {
+            hub: hub.clone(),
+            last: Some(json!({"available": true, "model": "Tiny 2 Lite"})),
+            last_full: Instant::now(),
+            zone: None,
+            dirty: false,
+            up: Some(true),
+        };
+        // every failed poll lands here; only the first one is news
+        worker.mark_unavailable();
+        worker.mark_unavailable();
+        assert!(worker.last.is_none());
+        drop((worker, hub));
+        let events: Vec<Value> = BufReader::new(client)
+            .lines()
+            .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1);
+        let state = &events[0]["state"];
+        assert_eq!(state["available"], false);
+        // the widget tells "no camera" by these keys being null, not missing
+        let keys = state.as_object().unwrap();
+        assert!(keys["model"].is_null() && keys["device"].is_null());
+        assert_eq!(state["streaming"], false);
+        assert_eq!(state["streaming_apps"], json!([]));
     }
 
     #[test]

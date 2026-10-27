@@ -51,22 +51,24 @@ fn busy(result: Result<(), Errno>) -> bool {
 /// than `EBUSY` (no access, no such node, no buffer support) counts as not streaming; the
 /// project has no logging, so they are not reported.
 pub fn is_streaming(device: &Path) -> bool {
+    busy(probe(device))
+}
+
+/// The REQBUFS(0) probe of `device`; an open error is returned as its errno.
+fn probe(device: &Path) -> Result<(), Errno> {
     let node = fs::canonicalize(device).unwrap_or_else(|_| device.to_path_buf());
-    let file = match OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(nix::libc::O_NONBLOCK)
         .open(&node)
-    {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
+        .map_err(|e| Errno::from_raw(e.raw_os_error().unwrap_or(0)))?;
     let mut req = V4l2RequestBuffers {
         type_: V4L2_BUF_TYPE_VIDEO_CAPTURE,
         memory: V4L2_MEMORY_MMAP,
         ..Default::default()
     };
-    busy(unsafe { vidioc_reqbufs(file.as_raw_fd(), &mut req) }.map(drop))
+    unsafe { vidioc_reqbufs(file.as_raw_fd(), &mut req) }.map(drop)
 }
 
 /// `comm` names (sorted, deduplicated) of the processes under `proc_root` that have `node`
@@ -179,8 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_node_is_not_streaming() {
-        assert!(!is_streaming(Path::new("/nonexistent/video99")));
+    fn the_probe_reaches_the_ioctl_and_reports_open_errors() {
+        // a node that opens read-write but is no video device: the ioctl itself answers
+        assert_eq!(probe(Path::new("/dev/null")), Err(Errno::ENOTTY));
+        assert_eq!(probe(Path::new("/nonexistent/video99")), Err(Errno::ENOENT));
+        assert!(!is_streaming(Path::new("/dev/null")));
     }
 
     #[test]
