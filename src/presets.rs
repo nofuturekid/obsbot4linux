@@ -7,6 +7,7 @@
 //! degrees positive up. The camera's preset format has tilt positive down, so the sign is
 //! flipped when writing and reading.
 
+use crate::commands::gimbal_angles_ok;
 use crate::error::{Error, Result};
 use crate::frame::{FRAME_SIZE, frame};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 const RECEIVER: u8 = 0x04;
 pub const SLOTS: u8 = 3;
 pub const MAX_NAME: usize = 32;
+pub const MAX_ZOOM: f32 = 4.0;
 const NAME_OFFSET: usize = 10;
 
 /// Per-preset picture settings OBSBOT Center writes after a delete: everything "not set".
@@ -49,18 +51,26 @@ pub fn check_slot(slot: u8) -> Result<()> {
     }
 }
 
-fn pose_frame(command: u16, slot: u8, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
-    check_slot(slot)?;
-    if !(pose.pan.is_finite() && pose.tilt.is_finite() && pose.zoom >= 1.0) {
-        return Err(Error::Invalid(
-            "preset pose needs finite pan/tilt and zoom >= 1".into(),
-        ));
+/// The pose layout of presets, start pose and return positions: `lead`, then pan, pitch (down
+/// positive), 0, zoom and `last`. Rejects poses outside the gimbal range or zoom 1.0-4.0; the
+/// preset readback holds zoom as u16 hundredths and the angles as i16 hundredths.
+fn pose_data(lead: u32, pose: Pose, last: f32, what: &str) -> Result<Vec<u8>> {
+    if !(gimbal_angles_ok(pose.pan, pose.tilt) && (1.0..=MAX_ZOOM).contains(&pose.zoom)) {
+        return Err(Error::Invalid(format!(
+            "{what} needs pan -150..150, tilt -89..90 and zoom 1.0-4.0"
+        )));
     }
-    let mut data = (slot as u32).to_le_bytes().to_vec();
-    // pan, pitch (down positive), 0, zoom, -1000 as OBSBOT Center sends it
-    for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, -1000.0] {
+    let mut data = lead.to_le_bytes().to_vec();
+    for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, last] {
         data.extend_from_slice(&v.to_le_bytes());
     }
+    Ok(data)
+}
+
+fn pose_frame(command: u16, slot: u8, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    check_slot(slot)?;
+    // last value -1000 as OBSBOT Center sends it
+    let data = pose_data(slot as u32, pose, -1000.0, "preset pose")?;
     Ok(frame(RECEIVER, command, &data, seq))
 }
 
@@ -111,15 +121,7 @@ pub fn recall(slot: u8, seq: u16) -> Result<[u8; FRAME_SIZE]> {
 /// Start pose (initial state, applied at power-on): `source` 3 = own pose, 0-2 = preset slot.
 /// Degrees and zoom factor as for presets (user tilt, positive up, flipped on the wire).
 pub fn startup_pose(source: u32, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
-    if !(pose.pan.is_finite() && pose.tilt.is_finite() && (1.0..=4.0).contains(&pose.zoom)) {
-        return Err(Error::Invalid(
-            "start pose needs finite pan/tilt and zoom 1.0-4.0".into(),
-        ));
-    }
-    let mut data = source.to_le_bytes().to_vec();
-    for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, 0.0] {
-        data.extend_from_slice(&v.to_le_bytes());
-    }
+    let data = pose_data(source, pose, 0.0, "start pose")?;
     Ok(frame(RECEIVER, 0x3ec4, &data, seq))
 }
 
@@ -135,15 +137,7 @@ pub fn hand_return_set(pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
 }
 
 fn return_set(command: u16, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
-    if !(pose.pan.is_finite() && pose.tilt.is_finite() && (1.0..=4.0).contains(&pose.zoom)) {
-        return Err(Error::Invalid(
-            "return position needs finite pan/tilt and zoom 1.0-4.0".into(),
-        ));
-    }
-    let mut data = 0u32.to_le_bytes().to_vec();
-    for v in [pose.pan, -pose.tilt + 0.0, 0.0, pose.zoom, 0.0] {
-        data.extend_from_slice(&v.to_le_bytes());
-    }
+    let data = pose_data(0, pose, 0.0, "return position")?;
     Ok(frame(0x04, command, &data, seq))
 }
 
@@ -413,6 +407,43 @@ mod tests {
         assert!(rename(0, "", 0).is_err());
         assert!(rename(0, "Büro", 0).is_err());
         assert!(create(0, Pose { zoom: 0.5, ..pose }, 0).is_err());
+    }
+
+    #[test]
+    fn poses_outside_the_gimbal_range_are_rejected() {
+        // inf zoom would go out as 0x7f800000 and could not be read back as u16 hundredths;
+        // -1000 is "keep this axis" for the gimbal; 400 would wrap in the i16 readback
+        let bad = [
+            (0.0, 0.0, f32::INFINITY),
+            (0.0, 0.0, 1e9),
+            (0.0, 0.0, 4.01),
+            (0.0, 0.0, f32::NAN),
+            (-1000.0, 0.0, 1.0),
+            (1000.0, 0.0, 1.0),
+            (150.5, 0.0, 1.0),
+            (400.0, 0.0, 1.0),
+            (0.0, 90.5, 1.0),
+            (0.0, -89.5, 1.0),
+            (0.0, -1000.0, 1.0),
+        ];
+        for (pan, tilt, zoom) in bad {
+            let p = Pose { pan, tilt, zoom };
+            assert!(create(0, p, 0).is_err(), "create {p:?}");
+            assert!(update(0, p, 0).is_err(), "update {p:?}");
+            assert!(startup_pose(3, p, 0).is_err(), "startup {p:?}");
+            assert!(zone_return_set(p, 0).is_err(), "zone return {p:?}");
+            assert!(hand_return_set(p, 0).is_err(), "hand return {p:?}");
+        }
+        for (pan, tilt) in [(-150.0, 90.0), (150.0, -89.0)] {
+            let edge = Pose {
+                pan,
+                tilt,
+                zoom: MAX_ZOOM,
+            };
+            assert!(create(0, edge, 0).is_ok(), "create {edge:?}");
+            assert!(startup_pose(3, edge, 0).is_ok(), "startup {edge:?}");
+            assert!(zone_return_set(edge, 0).is_ok(), "zone return {edge:?}");
+        }
     }
 
     // Read from a Tiny 2 Lite after writing pan 12.5, tilt -3.25 (camera convention), zoom 1.5.

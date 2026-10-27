@@ -115,6 +115,13 @@ pub fn auto_sleep(seconds: i16) -> [u8; 4] {
     let [lo, hi] = seconds.to_le_bytes();
     [0x0b, 0x02, lo, hi]
 }
+/// Auto-sleep off: the current time negated, as OBSBOT Center does.
+pub fn auto_sleep_off(current: u16) -> Result<[u8; 4]> {
+    // -0 reads back as on, so 0 s goes off as the camera's default 600 s (measured)
+    let current = if current == 0 { 600 } else { current };
+    let secs = i16::try_from(current).map_err(|_| invalid("auto-sleep time is at most 32767 s"))?;
+    Ok(auto_sleep(-secs))
+}
 pub fn sleep_background(background: SleepBackground) -> [u8; 4] {
     [0x0e, 0x02, 0x00, background.to_u8()]
 }
@@ -191,6 +198,16 @@ pub fn zone_tracking(on: bool, seq1: u16, seq2: u16) -> [[u8; FRAME_SIZE]; 2] {
 /// down (as 0x6444). OBSBOT Center's full area is yaw -100..100, pitch -30..30 (captures 11, 18).
 pub const ZONE_YAW_LIMIT: f32 = 100.0;
 pub const ZONE_PITCH_LIMIT: f32 = 30.0;
+/// Gimbal range in obsbot4linux's angles (pan positive = left, tilt positive = up). Measured on a
+/// Tiny 2 Lite: pan stops at about ±148; tilt reaches 90 and -89, -90 reads back as +90.
+pub const GIMBAL_PAN_LIMIT: f32 = 150.0;
+pub const GIMBAL_TILT_MIN: f32 = -89.0;
+pub const GIMBAL_TILT_MAX: f32 = 90.0;
+/// Whether pan and tilt (obsbot4linux's angles) are within the gimbal range. Rejects NaN, inf and
+/// -1000, which means "keep this axis" in 0x6444.
+pub fn gimbal_angles_ok(pan: f32, tilt: f32) -> bool {
+    pan.abs() <= GIMBAL_PAN_LIMIT && (GIMBAL_TILT_MIN..=GIMBAL_TILT_MAX).contains(&tilt)
+}
 /// The four area frames (yaw min / max, pitch min / max), sent one after the other as Center does.
 pub fn zone_area(
     yaw: (f32, f32),
@@ -250,9 +267,11 @@ pub fn factory_reset(seq: u16) -> [u8; FRAME_SIZE] {
 pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     const KEEP: f32 = -1000.0;
     if yaw.is_none() && pitch.is_none()
-        || [yaw, pitch].into_iter().flatten().any(|v| !v.is_finite())
+        || !gimbal_angles_ok(yaw.unwrap_or(0.0), pitch.map_or(0.0, |p| -p))
     {
-        return Err(invalid("gimbal pose needs a finite pan and/or tilt"));
+        return Err(invalid(
+            "gimbal pose needs pan -150..150 and/or tilt -89..90",
+        ));
     }
     let mut data = Vec::with_capacity(12);
     for v in [KEEP, pitch.unwrap_or(KEEP), yaw.unwrap_or(KEEP)] {
@@ -443,12 +462,42 @@ mod tests {
     }
 
     #[test]
+    fn gimbal_pose_rejects_what_the_camera_would_ignore() {
+        // -1000 on the wire keeps the axis, so these would report success without moving it.
+        // Pitch is the wire's (down positive): user tilt 90 up is pitch -90, -89 is pitch 89.
+        assert!(gimbal_pose(Some(-1000.0), None, 0).is_err());
+        assert!(gimbal_pose(Some(1000.0), None, 0).is_err());
+        assert!(gimbal_pose(None, Some(-1000.0), 0).is_err());
+        assert!(gimbal_pose(None, Some(1000.0), 0).is_err());
+        assert!(gimbal_pose(Some(150.5), None, 0).is_err());
+        assert!(gimbal_pose(Some(-150.5), None, 0).is_err());
+        assert!(gimbal_pose(None, Some(-90.5), 0).is_err());
+        assert!(
+            gimbal_pose(None, Some(89.5), 0).is_err(),
+            "tilt -90 flips to +90"
+        );
+        assert!(gimbal_pose(None, Some(f32::INFINITY), 0).is_err());
+        assert!(gimbal_pose(Some(150.0), Some(-90.0), 0).is_ok());
+        assert!(gimbal_pose(Some(-150.0), Some(89.0), 0).is_ok());
+    }
+
+    #[test]
     fn short_commands() {
         assert_eq!(ai_mode(AiMode::UpperBody), [0x16, 0x02, 0x02, 0x01]);
         assert_eq!(ai_mode(AiMode::Hand), [0x16, 0x02, 0x03, 0x00]);
         assert_eq!(auto_sleep(-120), [0x0b, 0x02, 0x88, 0xff]);
+        assert_eq!(auto_sleep_off(120).unwrap(), auto_sleep(-120));
         assert_eq!(led(2).unwrap(), [0x1a, 0x01, 0x02]);
         assert!(led(4).is_err());
         assert_eq!(hdr(true), [0x01, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn auto_sleep_off_is_always_negative() {
+        // the status reads >= 0 as on, so -0 would leave auto-sleep on
+        assert_eq!(auto_sleep_off(0).unwrap(), auto_sleep(-600));
+        // 32768 (status -0x8000) has no positive i16 to negate
+        assert_eq!(auto_sleep_off(32767).unwrap(), auto_sleep(-32767));
+        assert!(auto_sleep_off(32768).is_err());
     }
 }

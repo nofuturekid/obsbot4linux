@@ -7,7 +7,7 @@ use crate::commands::{self as cmd, *};
 use crate::device::{CtrlRange, Device};
 use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
-use crate::presets::{self, Pose, Preset};
+use crate::presets::{self, MAX_ZOOM, Pose, Preset};
 use crate::state::{Startup, State};
 use crate::status::{Status, Target, Tracking};
 use crate::streaming;
@@ -80,7 +80,6 @@ const FOCUS_AUTO: u32 = 0x009a_090c;
 const ZOOM_ABSOLUTE: u32 = 0x009a_090d;
 const PAN_ABSOLUTE: u32 = 0x009a_0908;
 const TILT_ABSOLUTE: u32 = 0x009a_0909;
-const MAX_ZOOM: f32 = 4.0;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageControl {
@@ -447,13 +446,14 @@ impl Camera {
         self.short(&cmd::hdr(on))
     }
     pub fn set_auto_sleep(&self, seconds: Option<u16>) -> Result<()> {
-        // off = the current time negated, as OBSBOT Center does
-        let secs = match seconds {
-            Some(s) => i16::try_from(s)
-                .map_err(|_| Error::Invalid("auto-sleep time is at most 32767 s".into()))?,
-            None => -(self.status()?.auto_sleep_seconds as i16),
+        let payload = match seconds {
+            Some(s) => cmd::auto_sleep(
+                i16::try_from(s)
+                    .map_err(|_| Error::Invalid("auto-sleep time is at most 32767 s".into()))?,
+            ),
+            None => cmd::auto_sleep_off(self.status()?.auto_sleep_seconds)?,
         };
-        self.short(&cmd::auto_sleep(secs))
+        self.short(&payload)
     }
     pub fn set_sleep_background(&self, b: SleepBackground) -> Result<()> {
         self.short(&cmd::sleep_background(b))
@@ -723,7 +723,7 @@ impl Camera {
         Ok(Pose {
             pan,
             tilt,
-            zoom: self.zoom_factor()?,
+            zoom: self.zoom_factor()?.clamp(1.0, MAX_ZOOM),
         })
     }
 
