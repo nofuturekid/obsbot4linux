@@ -1,8 +1,8 @@
 # OBSBot4Linux
 
 Control OBSBOT webcams on Linux, currently the Tiny 2 Lite: every setting OBSBOT Center
-offers, from the console and from the DMS bar widget
-[dms-obsbot-control](https://github.com/nofuturekid/dms-obsbot-control).
+offers, from the console and from the Dux (DankMaterialShell) bar widget
+[obsbot4linux-dux](https://github.com/nofuturekid/obsbot4linux-dux).
 
 The protocol comes from USB captures of OBSBOT Center (the protocol notes are not public
 at the moment); commands are tested byte for byte against the captured frames.
