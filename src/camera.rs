@@ -104,6 +104,19 @@ pub struct LivePose {
     pub tilt: f64,
 }
 
+impl LivePose {
+    /// Answer to 0x0043: bytes 8-9 are the pitch (positive down) and 10-11 the yaw (positive
+    /// left), i16 in hundredths of a degree; reported to a tenth like the gimbal commands take.
+    pub fn decode(d: &[u8]) -> Option<Self> {
+        let i16_at = |i: usize| d.get(i..i + 2).map(|b| i16::from_le_bytes([b[0], b[1]]));
+        let tenths = |v: f64| (v / 10.0).round() / 10.0;
+        Some(LivePose {
+            pan: tenths(i16_at(10)? as f64),
+            tilt: tenths(-(i16_at(8)? as f64)) + 0.0, // no -0
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct FullStatus {
     /// Human name of the camera model, e.g. "Tiny 2 Lite"; null while no camera is connected.
@@ -120,7 +133,7 @@ pub struct FullStatus {
     /// None when the camera did not answer query 0x0104.
     pub tracking: Option<Tracking>,
     pub zoom: Zoom,
-    /// Live gimbal pose from query 0x6604, also while AI tracking moves it.
+    /// Live gimbal pose from query 0x0043 (gimbal controller), also while AI tracking moves it.
     pub pose: Option<LivePose>,
     /// Tracking target from query 0x01c4; None while Static or when the camera gave no usable answer.
     pub target: Option<Target>,
@@ -240,8 +253,12 @@ impl Camera {
 
     /// Sends a query and polls selector 2 for the answer with the same sequence number.
     fn query(&self, command: u16) -> Result<Vec<u8>> {
+        self.query_to(0x04, command)
+    }
+
+    fn query_to(&self, receiver: u8, command: u16) -> Result<Vec<u8>> {
         let seq = self.seq.next();
-        self.framed(&query_frame(0x04, command, seq))?;
+        self.framed(&query_frame(receiver, command, seq))?;
         for _ in 0..REPLY_ATTEMPTS {
             sleep(REPLY_GAP);
             // a read before the answer is ready can fail; just poll again
@@ -277,20 +294,12 @@ impl Camera {
         Ok(f32::from_le_bytes(bytes))
     }
 
-    /// Query 0x6604 (OBSBOT Center reads it before saving a preset): 24 bytes of i16. Bytes
-    /// 8-9 are the pitch (positive down) and 10-11 the yaw (positive left) in tenths of a
-    /// degree; checked against gimbal moves (pan 20 -> 200, tilt 15 -> -150). The other values
-    /// change between reads at the same pose and are not decoded.
+    /// Query 0x0043 to the gimbal controller (receiver 3, `gimbalGetAttitudeInfoR` in OBSBOT
+    /// Center): the live pose, also while AI tracking moves the gimbal. Not the AI's 0x6604:
+    /// every 0x6604 arms a flag in the camera that makes the next zone tracking return switch to
+    /// Static (#67).
     pub fn live_pose(&self) -> Result<LivePose> {
-        let d = self.query(0x6604)?;
-        let i16_at = |i: usize| d.get(i..i + 2).map(|b| i16::from_le_bytes([b[0], b[1]]));
-        match (i16_at(8), i16_at(10)) {
-            (Some(pitch), Some(yaw)) => Ok(LivePose {
-                pan: yaw as f64 / 10.0,
-                tilt: -(pitch as f64) / 10.0,
-            }),
-            _ => Err(Error::NoAnswer(0x6604)),
-        }
+        LivePose::decode(&self.query_to(0x03, 0x0043)?).ok_or(Error::NoAnswer(0x0043))
     }
 
     /// Query 0x01c4: the tracking target. Only asked while AI tracking is on; Static answers
@@ -529,8 +538,8 @@ impl Camera {
         Ok(())
     }
 
-    /// Sets the current pose (live pose 0x6604 and zoom 0x6804, as Center reads it before saving a
-    /// preset) as the zone return position and returns it.
+    /// Sets the current pose (live pose 0x0043 and zoom 0x6804) as the zone return position and
+    /// returns it.
     pub fn set_zone_return_here(&self) -> Result<Pose> {
         let live = self.live_pose()?;
         let pose = Pose {
@@ -899,5 +908,38 @@ mod full_status_tests {
         // the keys the widget already reads stay where they were
         assert_eq!(v["available"], true);
         assert!(v["status"].is_object() && v["capabilities"].is_array());
+    }
+}
+
+#[cfg(test)]
+mod live_pose_tests {
+    use super::LivePose;
+
+    // 0x0043 answer of a Tiny 2 Lite in its sleep pose; 0x6604 read pan -0.3 / tilt -85.0 there.
+    const SLEEP_POSE: &str = "38004e24043000003321e1ff0000cf00fafffd20010000000101110000000000";
+
+    #[test]
+    fn reads_the_same_pose_as_the_ai_query_it_replaces() {
+        let d: Vec<u8> = (0..SLEEP_POSE.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&SLEEP_POSE[i..i + 2], 16).unwrap())
+            .collect();
+        let p = LivePose::decode(&d).unwrap();
+        assert_eq!((p.pan, p.tilt), (-0.3, -85.0));
+    }
+
+    #[test]
+    fn signs_follow_obsbot4linux_angles() {
+        // pitch +15.00 (down) and yaw +20.00 (left) must read as tilt -15, pan +20
+        let mut d = [0u8; 32];
+        d[8..10].copy_from_slice(&1500i16.to_le_bytes());
+        d[10..12].copy_from_slice(&2000i16.to_le_bytes());
+        let p = LivePose::decode(&d).unwrap();
+        assert_eq!((p.pan, p.tilt), (20.0, -15.0));
+    }
+
+    #[test]
+    fn a_short_answer_is_no_pose() {
+        assert!(LivePose::decode(&[0u8; 11]).is_none());
     }
 }

@@ -3,6 +3,17 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- With zone tracking and "follow new targets" on, the camera switched to Static each time the
+  target left the area and the gimbal returned, instead of taking the next person. obsbot4linux
+  caused it: the live pose came from the AI query `0x6604`, polled every second, and every
+  `0x6604` arms a flag in the camera that turns the next return into Static. The pose now comes
+  from the gimbal controller (`0x0043`), which does not set the flag and follows AI tracking just
+  the same (#67).
+
 ## [0.7.2] - 2026-10-27
 
 ### Fixed

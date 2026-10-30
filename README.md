@@ -163,12 +163,18 @@ positive = camera left, tilt positive = up.
 their place and now come from the camera too (`null` without an answer); `startup.preset` is the
 preset slot the start pose was taken from, `null` for an own pose.
 
-- `zone return-here` stores the current pose (queries `0x6604` and `0x6804`) as the position the
+- `zone return-here` stores the current pose (queries `0x0043` and `0x6804`) as the position the
   zone tracking returns to; `zone return-go` moves the camera there.
 - `startup go` moves the camera to the start pose now (what `zone return-here` sent before 0.5.0).
 
 The daemon reads these seven values at start, after each command and then once a minute, not with
 every poll. Capability: `zone_return`.
+
+When the target leaves the area, the camera returns to the return position and, with `zone follow
+on`, keeps tracking and takes the next person. A preset recall (`preset recall`) or `startup go` sets
+a flag in the camera that turns the next such return into Static once; after that it keeps
+tracking again. obsbot4linux reads the live pose from the gimbal controller (`0x0043`) because
+the AI's pose query `0x6604` sets the same flag (#67).
 
 ### Hand tracking return position
 
@@ -195,7 +201,7 @@ positive = up):
 area is only read; obsbot4linux has no command to change it (the camera's default is 45 degrees to
 each side and 30 up and down).
 
-- `hand return-here` stores the current pose (queries `0x6604` and `0x6804`) with `0x24c4`.
+- `hand return-here` stores the current pose (queries `0x0043` and `0x6804`) with `0x24c4`.
 - `hand return-go` moves the camera to the stored position (`0x2584`). With none set, the camera
   goes to pan 0, tilt 0.
 - `hand return-reset` clears it (`0x2544`); `return` is `null` again.
