@@ -50,7 +50,7 @@ pub enum OnOff {
 }
 
 impl OnOff {
-    fn get(self) -> bool {
+    pub fn get(self) -> bool {
         matches!(self, Self::On)
     }
 }
@@ -61,6 +61,9 @@ pub enum Cmd {
     Daemon,
     /// Stream state events as JSON lines and forward JSON requests from stdin (for widgets)
     Watch,
+    /// Ask the daemon to poll the gimbal pose for this connection (a `watch` request; the daemon
+    /// polls it every second only while a connection wants it). Not usable as a one-off call
+    LivePose { state: OnOff },
     /// Exit 0 and print the model (--json: model and video device) when a supported camera is
     /// connected, exit 1 with no output when not. Enumeration only: no daemon, no camera command
     Detect,
@@ -279,6 +282,9 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
             "daemon, watch and detect are not camera commands".into(),
         ));
     }
+    if matches!(cmd, Cmd::LivePose { .. }) {
+        return Err(Error::Invalid(LIVE_POSE_ONE_OFF.into()));
+    }
     let cam = Camera::open()?;
     // (command name, value) of a setter
     let done = |name: &str, value: Value| {
@@ -290,7 +296,9 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
         Ok((json!({"ok": true, "command": name, "value": value}), text))
     };
     match cmd {
-        Cmd::Daemon | Cmd::Watch | Cmd::Detect => unreachable!("handled above"),
+        Cmd::Daemon | Cmd::Watch | Cmd::Detect | Cmd::LivePose { .. } => {
+            unreachable!("handled above")
+        }
         Cmd::Status => {
             let full = value_name(cam.full_status()?);
             // the box is for machines: plain text only says whether the camera sees its target
@@ -583,9 +591,13 @@ pub fn print_error(json: bool, message: &str) -> i32 {
     1
 }
 
+const LIVE_POSE_ONE_OFF: &str = "live-pose applies to one connection of the daemon: send it as a request over `obsbot4linux watch` (it ends when that connection closes), not as a one-off call";
+
 pub fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
+        // the daemon would accept it and forget it with this process's connection
+        Cmd::LivePose { .. } => return print_error(cli.json, LIVE_POSE_ONE_OFF),
         Cmd::Daemon => return report(cli.json, crate::daemon::run()),
         Cmd::Watch => return report(cli.json, crate::client::watch()),
         Cmd::Detect => return detect(cli.json),

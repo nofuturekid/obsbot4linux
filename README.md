@@ -22,6 +22,11 @@ One program, `obsbot4linux`:
   waiting up to 5 s; video applications are not affected.
 - **`obsbot4linux watch`** keeps a connection open for the widget: state updates in,
   commands out, as JSON lines on stdout / stdin.
+  The live pose is sent on request: `{"id": 1, "args": ["live-pose", "on"]}` (`"off"` to stop)
+  makes the daemon read the gimbal pose every second for as long as at least one connection has
+  it on (a closed connection counts as off, a new one starts off; capability
+  `live_pose_on_demand`). Without any, `pose` in the state events is refreshed only by the full
+  read every 5 s. `live-pose` is rejected as a one-off CLI call.
 
 A change made one way shows up the other way at once.
 

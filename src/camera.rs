@@ -53,6 +53,7 @@ pub const CAPABILITIES: &[&str] = &[
     "preset",
     "factory_reset",
     "target",
+    "live_pose_on_demand",
 ];
 
 /// UVC controls for the picture, by CLI name (V4L2 control ids).

@@ -16,14 +16,15 @@ use obsbot4linux::error::{Error, Result};
 use obsbot4linux::state::{self, State};
 use obsbot4linux::streaming;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -55,6 +56,28 @@ fn read_only(cmd: &Cmd) -> bool {
     matches!(cmd, Cmd::Status | Cmd::Preset(PresetCmd::List))
 }
 
+/// Which connections want the live pose. It belongs to the connection, not to the camera: a
+/// widget that crashes or is closed without saying "off" must not keep the polling running, so a
+/// closing connection is removed here. A set of connection ids rather than a counter, so a
+/// repeated "on" from one connection is not counted twice and one "off" still turns it off.
+#[derive(Default)]
+struct PoseDemand(Mutex<HashSet<u64>>);
+
+impl PoseDemand {
+    fn set(&self, connection: u64, wanted: bool) {
+        let mut wanting = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if wanted {
+            wanting.insert(connection);
+        } else {
+            wanting.remove(&connection);
+        }
+    }
+
+    fn wanted(&self) -> bool {
+        !self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+}
+
 fn unavailable() -> Value {
     json!({
         "available": false, "model": null, "device": null,
@@ -79,6 +102,8 @@ fn stable(state: &Value) -> Value {
 
 struct Worker {
     hub: Arc<Hub>,
+    /// Whether any client wants the live pose; without one it is only read with the full status.
+    pose: Arc<PoseDemand>,
     /// Last full state seen from the camera (None while it is unavailable).
     last: Option<Value>,
     last_full: Instant,
@@ -170,15 +195,16 @@ impl Worker {
         }
     }
 
-    /// The gimbal pose, the tracking target and the streaming applications every tick, so a
-    /// pose moved by AI tracking or a started video call shows within a second. One broadcast
-    /// for all of them.
+    /// The gimbal pose (only while a client wants it), the tracking target and the streaming
+    /// applications every tick, so a pose moved by AI tracking or a started video call shows
+    /// within a second. One broadcast for all of them. Each pose query holds the camera lock,
+    /// so it is left out when nobody looks at it (#68); `pose` then changes with the full read.
     fn publish_live(&mut self, cam: &Camera) {
         let Some(last) = self.last.as_mut() else {
             return;
         };
         let mut changed = false;
-        if let Ok(pose) = cam.live_pose() {
+        if let Some(Ok(pose)) = self.pose.wanted().then(|| cam.live_pose()) {
             let pose = serde_json::to_value(pose).unwrap_or(Value::Null);
             if last["pose"] != pose {
                 last["pose"] = pose;
@@ -273,7 +299,7 @@ impl Worker {
     }
 }
 
-fn serve_client(stream: UnixStream, hub: Arc<Hub>, jobs: Sender<Job>) {
+fn serve_client(stream: UnixStream, hub: Arc<Hub>, pose: Arc<PoseDemand>, jobs: Sender<Job>) {
     let Ok(reader) = stream.try_clone() else {
         return;
     };
@@ -293,9 +319,16 @@ fn serve_client(stream: UnixStream, hub: Arc<Hub>, jobs: Sender<Job>) {
                 text: None,
                 error: Some(format!("bad request: {e}")),
             },
+            // per connection, so it is answered here and not by the camera worker
             Ok(req) => {
                 let (tx, rx) = mpsc::channel();
-                let outcome = if jobs
+                let outcome = if let Ok(Cmd::LivePose { state }) = parse_request(&req.args) {
+                    pose.set(id, state.get());
+                    Ok((
+                        json!({"live_pose": state.get()}),
+                        format!("live-pose: {}", if state.get() { "on" } else { "off" }),
+                    ))
+                } else if jobs
                     .send(Job {
                         args: req.args,
                         reply: tx,
@@ -330,6 +363,7 @@ fn serve_client(stream: UnixStream, hub: Arc<Hub>, jobs: Sender<Job>) {
         }
     }
     hub.remove(id);
+    pose.set(id, false);
 }
 
 /// The socket systemd passed (LISTEN_FDS), if any.
@@ -393,9 +427,11 @@ pub fn run() -> Result<()> {
     state::enable_cache();
     let (listener, _lock) = bind()?;
     let hub = Arc::new(Hub::default());
+    let pose = Arc::new(PoseDemand::default());
     let (tx, rx) = mpsc::channel();
     let worker = Worker {
         hub: hub.clone(),
+        pose: pose.clone(),
         last: None,
         last_full: Instant::now(),
         zone: None,
@@ -407,8 +443,8 @@ pub fn run() -> Result<()> {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    let (hub, tx) = (hub.clone(), tx.clone());
-                    std::thread::spawn(move || serve_client(stream, hub, tx));
+                    let (hub, pose, tx) = (hub.clone(), pose.clone(), tx.clone());
+                    std::thread::spawn(move || serve_client(stream, hub, pose, tx));
                 }
                 // e.g. EMFILE: retrying at once would spin
                 Err(e) => {
@@ -430,6 +466,7 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::OnOff;
 
     #[test]
     fn a_lost_camera_is_announced_once_with_null_model_and_device() {
@@ -438,6 +475,7 @@ mod tests {
         hub.add(srv).unwrap();
         let mut worker = Worker {
             hub: hub.clone(),
+            pose: Arc::default(),
             last: Some(json!({"available": true, "model": "Tiny 2 Lite"})),
             last_full: Instant::now(),
             zone: None,
@@ -499,6 +537,45 @@ mod tests {
             assert!(!read_only(&parsed(line)), "{line}");
         }
         assert!(parse_request(&["--json".into(), "watch".into()]).is_err());
+    }
+
+    #[test]
+    fn the_pose_is_polled_while_any_connection_wants_it() {
+        let demand = PoseDemand::default();
+        assert!(!demand.wanted(), "a new daemon polls nothing");
+        demand.set(1, true);
+        demand.set(2, true);
+        // a widget closing must not switch the pose off for the other one
+        demand.set(1, false);
+        assert!(demand.wanted());
+        demand.set(2, false);
+        assert!(!demand.wanted());
+    }
+
+    #[test]
+    fn repeated_on_from_one_connection_needs_only_one_off() {
+        // a reconnecting widget may say "on" again; a counter would never get back to zero
+        let demand = PoseDemand::default();
+        demand.set(7, true);
+        demand.set(7, true);
+        demand.set(7, false);
+        assert!(!demand.wanted());
+        demand.set(7, false); // "off" without "on" is harmless
+        assert!(!demand.wanted());
+    }
+
+    #[test]
+    fn live_pose_is_a_request_for_the_connection_not_a_camera_command() {
+        assert!(matches!(
+            parsed("live-pose on"),
+            Cmd::LivePose { state: OnOff::On }
+        ));
+        assert!(matches!(
+            parsed("--json live-pose off"),
+            Cmd::LivePose { state: OnOff::Off }
+        ));
+        assert!(parse_request(&["live-pose".into(), "maybe".into()]).is_err());
+        assert!(CAPABILITIES.contains(&"live_pose_on_demand"));
     }
 
     fn socket_in(tag: &str) -> std::path::PathBuf {

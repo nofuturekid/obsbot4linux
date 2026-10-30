@@ -3,6 +3,17 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- The daemon reads the live gimbal pose (`0x0043`) every second only while a client wants it.
+  A `watch` connection asks with the request `["live-pose", "on"]` (and `"off"`); the poll runs
+  while at least one connection has it on, a closed connection counts as off, and a new one
+  starts off. Without a subscriber `pose` in the state events changes only with the full read
+  every 5 s, so fewer queries hold the camera lock. New capability `live_pose_on_demand`; clients
+  that never ask no longer get a pose every second (#68).
+
 ## [0.7.3] - 2026-10-31
 
 ### Fixed
