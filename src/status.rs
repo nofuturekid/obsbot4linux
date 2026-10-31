@@ -91,7 +91,7 @@ pub struct Status {
     /// None for a value the camera is not known to report.
     pub anti_flicker: Option<AntiFlicker>,
     pub digital_zoom_percent: u8,
-    /// Zoom after waking up, 0-100 like `digital_zoom_percent`: the factor is 1 + 3 * value / 100.
+    /// Stored wake-up zoom, 0-100 like `digital_zoom_percent` (factor 1 + 3 * value / 100); no effect found on the Tiny 2 Lite.
     pub wake_up_zoom_percent: u16,
     /// Indices (0-3) of the uploaded sleep images (`mask0..3.jpg`), from the bitmask at 0x1a.
     pub sleep_images: Vec<u8>,

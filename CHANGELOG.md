@@ -5,6 +5,12 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `wake mode` sets the tracking mode at power-on, not on waking from sleep; `wake zoom` had no
+  observable effect on the Tiny 2 Lite, at power-on or on waking. README and help say so; command
+  names and JSON keys are unchanged (#102).
+
 ## [0.13.0] - 2026-10-31
 
 ### Added

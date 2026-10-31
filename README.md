@@ -80,8 +80,8 @@ camera. Two ways to use it:
   The serial number and UUID are not read. `obsbot4linux status` prints `firmware`.
 - `status.anti_flicker` is `off`, `50hz`, `60hz` or `auto` (the camera detects the mains
   frequency itself); `status` also has `wake_up_zoom_percent` (0-100 like `digital_zoom_percent`,
-  the zoom factor after waking is 1 + 3 * value / 100), `sleep_images` (indices 0-3 of the
-  uploaded sleep images) and `default_work_mode` (`{"main", "sub"}`).
+  the zoom factor after waking is 1 + 3 * value / 100; no effect found on the Tiny 2 Lite), `sleep_images` (indices 0-3 of the
+  uploaded sleep images) and `default_work_mode` (`{"main", "sub"}`, the tracking mode at power-on).
 
 ### Streaming applications
 
@@ -155,8 +155,8 @@ accept, as [min, max] (pan positive = camera left, tilt positive = up):
 | `led blink on\|off` | status LED blinks or burns steadily (`led 0-3` is still the brightness). The camera does not report it, so `status` has no field | `led_blink` |
 | `exposure manual --time T --gain G` | manual exposure with the shutter time (100 us units, 1-2500; the camera uses the step at or below, e.g. 600 gives 500) and gain (1-64); both optional, both checked before anything is sent. Without them it only switches to manual as before | `exposure_values` |
 | `audio volume 0-100` | microphone volume; `audio_volume` in the status reads it back, and `status.pickup_distance` follows (below 50 near, 50-84 standard, from 85 far) | `audio_volume` |
-| `wake zoom 1.0-4.0` | zoom after waking up; read back as `status.wake_up_zoom_percent` (2.0 is 33) | `wake_zoom` |
-| `wake mode <mode>` | tracking mode the camera starts in (the same names as `tracking`); read back as `status.default_work_mode`. The running mode does not change. `wake` alone still wakes the camera | `wake_mode` |
+| `wake zoom 1.0-4.0` | stored "wake-up zoom"; read back as `status.wake_up_zoom_percent` (2.0 is 33). Effect unknown on the Tiny 2 Lite: it changed neither the zoom at power-on nor on waking from sleep | `wake_zoom` |
+| `wake mode <mode>` | tracking mode the camera starts in at power-on, not on waking from sleep (the same names as `tracking`); read back as `status.default_work_mode`. The running mode does not change. `wake` alone still wakes the camera | `wake_mode` |
 | `focus af continuous\|single\|manual` | the camera's own autofocus mode (`single` focuses once and holds; `manual` takes the position of `focus set`) | `focus_af_mode` |
 | `focus point X Y` | focus once on a point, X and Y from 0.0 to 1.0 from the top left; the camera switches to `single` | `focus_point` |
 

@@ -71,9 +71,11 @@ pub enum LedCmd {
 
 #[derive(Subcommand)]
 pub enum WakeCmd {
-    /// Zoom factor 1.0-4.0 the camera takes after waking up (the camera stores 0-100 percent)
+    /// Stored wake-up zoom, factor 1.0-4.0 (the camera stores 0-100 percent). Effect unknown on
+    /// the Tiny 2 Lite: no change at power-on or on waking from sleep
     Zoom { factor: f32 },
-    /// Tracking mode the camera starts in (the current mode stays)
+    /// Tracking mode the camera starts in at power-on, not on waking from sleep (the current mode
+    /// stays)
     Mode { mode: AiMode },
 }
 
@@ -151,7 +153,8 @@ pub enum Cmd {
     Status,
     /// Put the camera to sleep
     Sleep,
-    /// Wake the camera, or set what it does on waking: `wake zoom`, `wake mode`
+    /// Wake the camera, or set the stored wake-up zoom (`wake zoom`) or the tracking mode at
+    /// power-on (`wake mode`)
     Wake {
         #[command(subcommand)]
         setting: Option<WakeCmd>,
