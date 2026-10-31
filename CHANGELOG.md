@@ -5,11 +5,14 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-31
+
 ### Added
 
 - `firmware` (e.g. `6.2.8.1`, query `0x0408`) and `model_info` (`product`, `platform`, query
   `0x1948`) in `status` and the state events, read once per connect; `obsbot4linux status`
-  prints the firmware (through the daemon, from what it already read). The serial number and UUID are not read (#63).
+  prints the firmware (through the daemon, from what it already read). The serial number and
+  UUID are not read (#63).
 - `startup show` prints the start pose (`0x3884`) and the picture settings of the initial state
   (`0x3e84`) (#89). A set group shows the byte as read, a group that is not set is `null`.
 - `status` shows `wake_up_zoom_percent`, `sleep_images` and `default_work_mode` (#82).
@@ -23,7 +26,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 - `startup go` no longer turns the next zone tracking return into Static. It sends the short
   command `00` instead of the framed `0x3904`, which arms that flag in the camera (#79). The
-  camera ignores the short command while asleep or with the gimbal locked.
+  camera ignores the short command while asleep or with the gimbal locked. Found by static
+  analysis of the firmware; the zone return itself is not yet checked on the camera.
 - The error code of a rejected query ("camera rejected query ...") was read from the wrong place.
   Those answers have a 16-byte header with the code (a signed 16-bit number, e.g. -3) in an
   extension; it is now read from there and shown in decimal (#62).
