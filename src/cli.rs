@@ -173,7 +173,7 @@ pub enum Cmd {
         stop: Option<ZoomCmd>,
     },
     /// Move the gimbal to an absolute pose in degrees (switches tracking to static first), or
-    /// `gimbal stop|center|rate`
+    /// `gimbal stop|rate`
     #[command(args_conflicts_with_subcommands = true)]
     Gimbal {
         /// Positive turns the camera to its left
