@@ -5,6 +5,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-31
+
 ### Added
 
 - `speed-mode lazy|slow|normal|fast|very-fast|auto` sets the finer tracking speed (`0x0944`) and
@@ -15,8 +17,8 @@ All notable changes to OBSBot4Linux. The format follows
   Capability `framing` (#84).
 - `gimbal rate --pan R --tilt R` turns the gimbal at a speed until `gimbal stop` (`0x6484`, the
   joystick of OBSBOT Center; it does not limit absolute moves). The camera reverses its yaw when
-  mirror xor invert is on, which obsbot4linux undoes. It turns until `gimbal stop`; no
-  capability `gimbal_rate`, since the camera has no timeout. Capability `gimbal_stop` (#78, #80).
+  mirror xor invert is on, which obsbot4linux undoes. No capability `gimbal_rate`: the camera
+  has no timeout, so a client that dies leaves it turning. Capability `gimbal_stop` (#78, #80).
 - `gimbal --pan P --tilt T --speed S` moves at S degrees per second (`0x6544`), `zoom F --speed S`
   zooms smoothly (`0x6884`) and `zoom stop` / `gimbal stop` stop (`0x68c4`, `0x6704`). Capabilities
   `gimbal_speed`, `zoom_speed` (#80).
