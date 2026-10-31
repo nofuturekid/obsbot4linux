@@ -5,6 +5,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-31
+
 ### Added
 
 - `presets` (`[{slot, name, pose}]`, `null` when the camera did not answer) in `status` and the
