@@ -7,9 +7,10 @@
 //! degrees positive up. The camera's preset format has tilt positive down, so the sign is
 //! flipped when writing and reading.
 
-use crate::commands::gimbal_angles_ok;
+use crate::commands::{AiMode, gimbal_angles_ok};
 use crate::error::{Error, Result};
 use crate::frame::{FRAME_SIZE, frame};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 const RECEIVER: u8 = 0x04;
@@ -157,13 +158,70 @@ pub fn parse_pose(data: &[u8]) -> Option<(u32, Pose)> {
     ))
 }
 
-/// Picture settings of the initial state with every group "not set", as in capture 08.
-pub fn startup_picture_settings(seq: u16) -> [u8; FRAME_SIZE] {
-    let mut data = [0u8; 40];
-    data[0..8].copy_from_slice(&[0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+/// What the camera tracks again after `startup go`: byte 0 of the initial-state block. Only the
+/// values seen on the camera or in OBSBOT Center are offered; hand tracking (7 or 8, which one
+/// is written is not known), close-up (2) and lower body (4) are read but not written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StartupAi {
+    Static,
+    Normal,
+    UpperBody,
+    Headless,
+    Group,
+    /// Not set (the camera's own default): `startup go` leaves tracking suspended.
+    None,
+}
+
+impl StartupAi {
+    pub fn byte(self) -> u8 {
+        match self {
+            Self::Static => 0xff,
+            Self::Normal => 0,
+            Self::UpperBody => 1,
+            Self::Headless => 3,
+            Self::Group => 9,
+            Self::None => STARTUP_AI_NOT_SET,
+        }
+    }
+}
+
+/// Byte 0 of the initial-state block when no AI mode is set. After the move of `startup go` the
+/// camera then does not resume tracking (#79).
+pub const STARTUP_AI_NOT_SET: u8 = 0xfe;
+
+/// The AI mode named by byte 0 of the initial-state block; None when not set, or a value not known.
+pub fn startup_ai_mode(byte: u8) -> Option<AiMode> {
+    match byte {
+        0xff => Some(AiMode::Static),
+        0 => Some(AiMode::Normal),
+        1 => Some(AiMode::UpperBody),
+        2 => Some(AiMode::CloseUp),
+        3 => Some(AiMode::Headless),
+        4 => Some(AiMode::LowerBody),
+        7 | 8 => Some(AiMode::Hand),
+        9 => Some(AiMode::Group),
+        _ => None,
+    }
+}
+
+const STARTUP_BLOCK: usize = 40;
+
+/// Picture settings of the initial state with every group "not set" and `ai` in byte 0 (as in
+/// capture 08: `0xfe` not set, `0x00` normal).
+pub fn startup_picture_settings(ai: u8, seq: u16) -> [u8; FRAME_SIZE] {
+    let mut data = [0u8; STARTUP_BLOCK];
+    data[0..8].copy_from_slice(&[ai, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
     data[8..16].copy_from_slice(&[0x80, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
     data[20..24].copy_from_slice(&[0xff; 4]);
     frame(RECEIVER, 0x3e44, &data, seq)
+}
+
+/// The block read back with `0x3e84`, written again with only byte 0 changed. None when the
+/// answer is not a whole block.
+pub fn startup_with_ai(read: &[u8], ai: u8, seq: u16) -> Option<[u8; FRAME_SIZE]> {
+    let mut data: [u8; STARTUP_BLOCK] = read.get(..STARTUP_BLOCK)?.try_into().ok()?;
+    data[0] = ai;
+    Some(frame(RECEIVER, 0x3e44, &data, seq))
 }
 
 /// The picture settings of the initial state, from the 40-byte answer to `0x3e84` (the layout of
@@ -182,6 +240,9 @@ pub struct StartupActions {
     pub saturation: Option<u8>,
     pub sharpness: Option<u8>,
     pub hue: Option<u8>,
+    /// The AI mode the camera takes at power-on and returns to after `startup go` (byte 0);
+    /// None when not set.
+    pub ai_mode: Option<AiMode>,
 }
 
 impl StartupActions {
@@ -200,6 +261,7 @@ impl StartupActions {
             saturation: group(21),
             sharpness: group(22),
             hue: group(23),
+            ai_mode: startup_ai_mode(d[0]),
         })
     }
 }
@@ -465,9 +527,83 @@ mod tests {
         );
         assert!(startup_pose(3, Pose { zoom: 5.0, ..pose }, 0).is_err());
         assert_captured(
-            startup_picture_settings(130),
+            startup_picture_settings(STARTUP_AI_NOT_SET, 130),
             "aa2582000c00ec960a04443e28004dd4feffffffffffffff80ffffffffffffff00000000ffffffff",
         );
+    }
+
+    // The 40-byte block of `0x3e44` in capture 08, frames at seq 120 (OBSBOT Center sets AI mode
+    // normal) and seq 130 (not set). They differ in byte 0 only, which is the byte `startup go`
+    // depends on (#79). The block starts after the 16-byte frame header.
+    const CAPTURE_08_NORMAL: &str =
+        "00ffffffffffffff80ffffffffffffff00000000ffffffff00000000000000000000000000000000";
+    const CAPTURE_08_NOT_SET: &str =
+        "feffffffffffffff80ffffffffffffff00000000ffffffff00000000000000000000000000000000";
+
+    #[test]
+    fn startup_block_with_an_ai_mode_matches_capture_08() {
+        let block = |ai| startup_picture_settings(ai, 120)[16..56].to_vec();
+        assert_eq!(block(0), hex::decode(CAPTURE_08_NORMAL).unwrap());
+        assert_eq!(
+            block(STARTUP_AI_NOT_SET),
+            hex::decode(CAPTURE_08_NOT_SET).unwrap()
+        );
+    }
+
+    #[test]
+    fn ai_alone_rewrites_only_byte_0_of_what_the_camera_reports() {
+        // a camera with autofocus, exposure and contrast set in the initial state: they stay
+        let mut read = [0xffu8; 40];
+        read[0] = STARTUP_AI_NOT_SET;
+        read[2] = 1;
+        read[6] = 1;
+        read[20] = 60;
+        read[30] = 0x5a; // a byte this code does not know: kept as read
+        let built = startup_with_ai(&read, StartupAi::Normal.byte(), 7).unwrap();
+        let mut want = read;
+        want[0] = 0;
+        assert_eq!(built[16..56], want[..]);
+        assert_eq!(&built[10..12], &[0x44, 0x3e], "it is written with 0x3e44");
+        // from the capture: not set -> normal changes byte 0 and nothing else
+        let read = hex::decode(CAPTURE_08_NOT_SET).unwrap();
+        assert_eq!(
+            startup_with_ai(&read, 0, 1).unwrap()[16..56],
+            hex::decode(CAPTURE_08_NORMAL).unwrap()[..]
+        );
+        assert!(
+            startup_with_ai(&read[..39], 0, 1).is_none(),
+            "a short answer is not written back"
+        );
+    }
+
+    #[test]
+    fn startup_ai_bytes_decode_and_only_known_ones_are_written() {
+        assert_eq!(startup_ai_mode(STARTUP_AI_NOT_SET), None);
+        assert_eq!(startup_ai_mode(0xff), Some(AiMode::Static));
+        assert_eq!(startup_ai_mode(0), Some(AiMode::Normal));
+        assert_eq!(startup_ai_mode(7), Some(AiMode::Hand));
+        assert_eq!(startup_ai_mode(8), Some(AiMode::Hand));
+        assert_eq!(startup_ai_mode(0x42), None);
+        for ai in [
+            StartupAi::Static,
+            StartupAi::Normal,
+            StartupAi::UpperBody,
+            StartupAi::Headless,
+            StartupAi::Group,
+        ] {
+            let mode = startup_ai_mode(ai.byte()).expect("an offered value reads back as a mode");
+            let name = format!("{ai:?}").to_lowercase();
+            assert_eq!(format!("{mode:?}").to_lowercase(), name);
+        }
+        assert_eq!(StartupAi::None.byte(), STARTUP_AI_NOT_SET);
+        // the camera's own mode on the status is what the byte names
+        let d = hex::decode(CAPTURE_08_NORMAL).unwrap();
+        assert_eq!(
+            StartupActions::decode(&d).unwrap().ai_mode,
+            Some(AiMode::Normal)
+        );
+        let d = hex::decode(CAPTURE_08_NOT_SET).unwrap();
+        assert_eq!(StartupActions::decode(&d).unwrap().ai_mode, None);
     }
 
     #[test]

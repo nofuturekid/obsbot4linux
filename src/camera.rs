@@ -7,7 +7,7 @@ use crate::commands::{self as cmd, *};
 use crate::device::{CtrlRange, Device};
 use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
-use crate::presets::{self, MAX_ZOOM, Pose, Preset, StartupActions};
+use crate::presets::{self, MAX_ZOOM, Pose, Preset, StartupActions, StartupAi};
 use crate::state::{Startup, State};
 use crate::status::{Focus, ModelInfo, Status, Target, Tracking, firmware_version};
 use crate::streaming;
@@ -62,6 +62,7 @@ pub const CAPABILITIES: &[&str] = &[
     "wake_mode",
     "exposure_values",
     "startup",
+    "startup_ai",
     "image",
     "preset",
     "factory_reset",
@@ -494,6 +495,7 @@ impl Camera {
             pan: pose.pan,
             tilt: pose.tilt,
             zoom: pose.zoom,
+            ai_mode: self.startup_actions().ok().and_then(|a| a.ai_mode),
         })
     }
 
@@ -849,28 +851,49 @@ impl Camera {
         self.dev.set_ctrl(FOCUS_ABSOLUTE, value)
     }
 
-    /// Initial state: the pose the camera moves to at power-on, then "no picture settings".
-    pub fn set_startup(&self, pose: Pose, preset: Option<u8>) -> Result<()> {
+    /// Byte 0 of the initial state (`0x3e84`), the AI mode the camera takes up again.
+    fn startup_ai_byte(&self) -> Result<u8> {
+        self.query_u8(0x3e84)
+    }
+
+    /// Initial state: the pose the camera moves to at power-on, then "no other picture settings".
+    /// Byte 0 of the picture settings, the AI mode, keeps its value unless `ai` is given: with
+    /// "not set" in it the camera stays without tracking after `startup go` (#79). When the
+    /// value cannot be read, nothing is written.
+    pub fn set_startup(&self, pose: Pose, preset: Option<u8>, ai: Option<StartupAi>) -> Result<()> {
+        let ai = match ai {
+            Some(ai) => ai.byte(),
+            None => self.startup_ai_byte()?,
+        };
         let source = preset.map_or(3, u32::from);
         let pose_frame = presets::startup_pose(source, pose, self.seq.next())?;
         self.framed(&pose_frame)?;
         sleep(PAIR_GAP);
-        self.framed(&presets::startup_picture_settings(self.seq.next()))
+        self.framed(&presets::startup_picture_settings(ai, self.seq.next()))
+    }
+
+    /// Sets only the AI mode of the initial state: the block read back with `0x3e84`, written
+    /// again with a new byte 0, so the pose and the other settings stay.
+    pub fn set_startup_ai(&self, ai: StartupAi) -> Result<()> {
+        let block = self.query(0x3e84)?;
+        let frame = presets::startup_with_ai(&block, ai.byte(), self.seq.next())
+            .ok_or(Error::NoAnswer(0x3e84))?;
+        self.framed(&frame)
     }
 
     /// Start pose from a stored preset.
-    pub fn set_startup_preset(&self, slot: u8) -> Result<Pose> {
+    pub fn set_startup_preset(&self, slot: u8, ai: Option<StartupAi>) -> Result<Pose> {
         presets::check_slot(slot)?;
         let p = self.presets()?.into_iter().find(|p| p.slot == slot);
         let p = p.ok_or_else(|| Error::Invalid(format!("preset slot {slot} is empty")))?;
-        self.set_startup(p.pose, Some(slot))?;
+        self.set_startup(p.pose, Some(slot), ai)?;
         Ok(p.pose)
     }
 
     /// Start pose from the current pose (remembered gimbal pose, live zoom).
-    pub fn set_startup_current(&self) -> Result<Pose> {
+    pub fn set_startup_current(&self, ai: Option<StartupAi>) -> Result<Pose> {
         let pose = self.current_pose()?;
-        self.set_startup(pose, None)?;
+        self.set_startup(pose, None, ai)?;
         Ok(pose)
     }
 

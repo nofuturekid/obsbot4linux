@@ -4,7 +4,7 @@
 //! exposure mode. The CLI updates it whenever it sets them, so separate calls stay
 //! consistent. Location: `$XDG_STATE_HOME/obsbot4linux/state.json` (default `~/.local/state`).
 
-use crate::commands::ExposureMode;
+use crate::commands::{AiMode, ExposureMode};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -111,6 +111,9 @@ pub struct Startup {
     pub pan: f32,
     pub tilt: f32,
     pub zoom: f32,
+    /// AI mode of the initial state (byte 0 of `0x3e84`): what the camera tracks in after
+    /// `startup go` and at power-on. None when not set, or when the camera did not answer.
+    pub ai_mode: Option<AiMode>,
 }
 
 pub fn path() -> PathBuf {
@@ -221,5 +224,20 @@ mod tests {
         let names: Vec<_> = dir.flatten().map(|e| e.file_name()).collect();
         assert_eq!(names, ["state.json"]);
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn startup_object_adds_ai_mode_and_keeps_its_keys() {
+        let at = |ai_mode| Startup {
+            preset: None,
+            pan: 0.0,
+            tilt: 0.0,
+            zoom: 1.0,
+            ai_mode,
+        };
+        let v = serde_json::to_value(at(Some(AiMode::UpperBody))).unwrap();
+        assert_eq!(v["ai_mode"], "upper_body");
+        assert_eq!(v["zoom"], 1.0, "the keys clients read are still there");
+        assert!(serde_json::to_value(at(None)).unwrap()["ai_mode"].is_null());
     }
 }

@@ -199,14 +199,25 @@ positive = camera left, tilt positive = up.
 
 `zone` is `null` when the camera does not answer. `state.zone_follow` and `state.startup` keep
 their place and now come from the camera too (`null` without an answer); `startup.preset` is the
-preset slot the start pose was taken from, `null` for an own pose.
+preset slot the start pose was taken from, `null` for an own pose. `startup.ai_mode` is the AI mode
+of the initial state (see below), `null` when none is set.
 
 - `zone return-here` stores the current pose (queries `0x0043` and `0x6804`) as the position the
   zone tracking returns to; `zone return-go` moves the camera there.
 - `startup show` prints the start pose (query `0x3884`) and the picture settings of the initial
-  state (`0x3e84`); a setting the initial state does not set is `null`.
+  state (`0x3e84`); a setting the initial state does not set is `null`. `ai_mode` is the first byte
+  of that block.
 - `startup go` moves the camera to the start pose now (what `zone return-here` sent before 0.5.0).
-  The camera ignores it while asleep or with the gimbal locked.
+  The camera ignores it while asleep or with the gimbal locked. It stops tracking when the initial
+  state has no AI mode: the mode still reads as set, but the target stays `null` until you set a
+  mode again (#79). With a mode in the initial state the camera returns to it on arrival and
+  tracks again within about a second; it also powers on in that mode.
+- `startup set --ai static|normal|upper-body|headless|group|none` sets that AI mode. `startup set`
+  with a pose keeps the mode as it is unless `--ai` is given; `--ai` alone changes the mode and
+  leaves the pose (and the other settings of the initial state) as read from the camera. `none`
+  is the camera's "not set". Hand tracking, close-up and lower body are not offered: the values
+  are not verified. `startup set` with a pose still clears the other picture settings of the
+  initial state.
 
 The daemon reads these seven values at start, after each command and then once a minute, not with
 every poll. Capability: `zone_return`.

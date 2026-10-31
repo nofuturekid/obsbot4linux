@@ -5,6 +5,18 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `startup set --ai static|normal|upper-body|headless|group|none` sets the AI mode of the initial
+  state, alone (the pose stays) or with a pose. `startup show` and `status.state.startup` show it
+  as `ai_mode` (`null` when not set). Capability `startup_ai` (#79).
+
+### Fixed
+
+- `startup go` left tracking suspended when the initial state had no AI mode, which is what
+  `startup set` always wrote. `startup set` now keeps the mode of the initial state unless
+  `--ai` is given, and the README says that `startup go` needs a mode there (#79).
+
 ## [0.11.0] - 2026-10-31
 
 ### Added

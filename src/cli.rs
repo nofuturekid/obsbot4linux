@@ -9,7 +9,7 @@ use obsbot4linux::camera::{Camera, Identity};
 use obsbot4linux::commands::*;
 use obsbot4linux::device::Detected;
 use obsbot4linux::error::{Error, Result};
-use obsbot4linux::presets::Pose;
+use obsbot4linux::presets::{Pose, StartupAi};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -338,6 +338,11 @@ pub enum StartupCmd {
         /// Use the current pose (remembered gimbal pose, live zoom)
         #[arg(long, conflicts_with = "pan")]
         current: bool,
+        /// AI mode of the initial state (the camera tracks in it again after "startup go" and
+        /// powers on in it). Kept as it is when not given; "none" clears it, and then
+        /// "startup go" leaves tracking suspended. Alone, it leaves the pose untouched.
+        #[arg(long, value_enum)]
+        ai: Option<StartupAi>,
     },
     /// Show the start pose and the picture settings of the initial state
     Show,
@@ -674,21 +679,28 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
             zoom,
             preset,
             current,
+            ai,
         }) => {
             let pose = match (pan.zip(tilt).zip(zoom), preset, current) {
                 (Some(((pan, tilt), zoom)), None, false) => {
-                    cam.set_startup(Pose { pan, tilt, zoom }, None)?;
-                    Pose { pan, tilt, zoom }
+                    cam.set_startup(Pose { pan, tilt, zoom }, None, ai)?;
+                    Some(Pose { pan, tilt, zoom })
                 }
-                (None, Some(slot), false) => cam.set_startup_preset(slot)?,
-                (None, None, true) => cam.set_startup_current()?,
-                _ => {
-                    return Err(Error::Invalid(
-                        "give --pan/--tilt/--zoom, or --preset, or --current".into(),
-                    ));
-                }
+                (None, Some(slot), false) => Some(cam.set_startup_preset(slot, ai)?),
+                (None, None, true) => Some(cam.set_startup_current(ai)?),
+                (None, None, false) => match ai {
+                    Some(ai) => {
+                        cam.set_startup_ai(ai)?;
+                        None
+                    }
+                    None => return Err(Error::Invalid(NEED_STARTUP_ARGS.into())),
+                },
+                _ => return Err(Error::Invalid(NEED_STARTUP_ARGS.into())),
             };
-            done("startup", json!({"pose": pose, "preset": preset}))
+            done(
+                "startup",
+                json!({"pose": pose, "preset": preset, "ai": ai.and_then(|a| a.to_possible_value()).map(|v| v.get_name().to_string())}),
+            )
         }
         Cmd::Startup(StartupCmd::Show) => {
             // the pose is the point of the command: a refused actions query leaves them null
@@ -759,6 +771,8 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
 }
 
 /// Text view of nested JSON: one "path: value" line per leaf.
+const NEED_STARTUP_ARGS: &str = "give --pan/--tilt/--zoom, or --preset, or --current, or --ai";
+
 fn flatten(v: &Value) -> String {
     fn walk(prefix: &str, v: &Value, out: &mut Vec<String>) {
         match v {
@@ -896,6 +910,25 @@ mod tests {
             })
         ));
         assert!(parse("led 2 blink on").is_err());
+    }
+
+    #[test]
+    fn startup_set_takes_ai_alone_or_with_a_pose_and_only_verified_modes() {
+        assert!(matches!(
+            parse("startup set --ai normal"),
+            Ok(Cmd::Startup(StartupCmd::Set {
+                ai: Some(StartupAi::Normal),
+                pan: None,
+                current: false,
+                ..
+            }))
+        ));
+        assert!(parse("startup set --current --ai upper-body").is_ok());
+        assert!(parse("startup set --ai none").is_ok());
+        // unverified values are not offered
+        for ai in ["hand", "close-up", "lower-body"] {
+            assert!(parse(&format!("startup set --ai {ai}")).is_err(), "{ai}");
+        }
     }
 
     #[test]
