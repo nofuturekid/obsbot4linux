@@ -5,6 +5,23 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `led blink on|off` makes the status LED blink or burn steadily (short command `18`). The status
+  block does not carry it, so `status` cannot show it. `led 0-3` is unchanged (#76).
+- `exposure manual --time <1-2500> --gain <1-64>` sets the shutter time and gain together with
+  the switch to manual exposure, both range-checked first. The camera uses the shutter step at or
+  below the time given. Capability `exposure_values` (#77).
+- `audio volume <0-100>` sets the microphone volume (`0x8102`); `status` has `audio_volume`
+  (query `0x80c2`). Capability `audio_volume` (#86).
+- `wake zoom <1.0-4.0>` sets the zoom after waking up and `wake mode <mode>` the tracking mode the
+  camera starts in; both read back in `status` (`wake_up_zoom_percent`, `default_work_mode`).
+  `wake` alone still wakes the camera. Capabilities `wake_zoom`, `wake_mode` (#87).
+- `focus af continuous|single|manual` sets the camera's own autofocus mode (`0x3442`) and
+  `focus point <x> <y>` focuses once on a point (`0x3582`); `status` has `focus` with the mode,
+  the manual position and the focus window (query `0x3642`). Capabilities `focus_af_mode`,
+  `focus_point` (#88).
+
 ## [0.9.0] - 2026-10-31
 
 ### Added

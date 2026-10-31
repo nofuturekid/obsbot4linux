@@ -43,6 +43,20 @@ pub enum HandCmd {
     ReturnReset,
 }
 
+#[derive(Subcommand)]
+pub enum LedCmd {
+    /// Let the status LED blink (on) or burn steadily (off). The camera does not report it
+    Blink { state: OnOff },
+}
+
+#[derive(Subcommand)]
+pub enum WakeCmd {
+    /// Zoom factor 1.0-4.0 the camera takes after waking up (the camera stores 0-100 percent)
+    Zoom { factor: f32 },
+    /// Tracking mode the camera starts in (the current mode stays)
+    Mode { mode: AiMode },
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum OnOff {
     On,
@@ -71,16 +85,29 @@ pub enum Cmd {
     Status,
     /// Put the camera to sleep
     Sleep,
-    /// Wake the camera
-    Wake,
+    /// Wake the camera, or set what it does on waking: `wake zoom`, `wake mode`
+    Wake {
+        #[command(subcommand)]
+        setting: Option<WakeCmd>,
+    },
     /// AI tracking mode
     Tracking { mode: AiMode },
     /// Tracking speed
     Speed { speed: TrackingSpeed },
     /// HDR
     Hdr { state: OnOff },
-    /// Exposure: automatic metering over the whole picture (global) or on faces (face), or manual (then set exposure_time / gain with `image`)
-    Exposure { mode: ExposureArg },
+    /// Exposure: automatic metering over the whole picture (global) or on faces (face), or manual,
+    /// optionally with the shutter time and gain (`image exposure_time` / `image gain` set them too)
+    Exposure {
+        mode: ExposureArg,
+        /// Manual only: shutter time in 100 us units, 1-2500 (330 is one frame at 30 fps); the
+        /// camera uses the step at or below it
+        #[arg(long)]
+        time: Option<i32>,
+        /// Manual only: gain 1-64 (ISO is gain x 100)
+        #[arg(long)]
+        gain: Option<i32>,
+    },
     /// Zoom factor 1.0-4.0
     Zoom {
         #[arg(allow_negative_numbers = true)]
@@ -97,8 +124,13 @@ pub enum Cmd {
     },
     /// Field of view (ignored by the camera while it sleeps)
     Fov { fov: FieldOfView },
-    /// Status LED brightness 0 (off) to 3
-    Led { brightness: u8 },
+    /// Status LED: brightness 0 (off) to 3, or `led blink on|off`
+    #[command(args_conflicts_with_subcommands = true)]
+    Led {
+        brightness: Option<u8>,
+        #[command(subcommand)]
+        blink: Option<LedCmd>,
+    },
     /// Mirror the image
     Mirror { state: OnOff },
     /// Invert view and gimbal (reverses the gimbal's pan direction)
@@ -158,6 +190,11 @@ pub enum Audio {
     Gain { state: OnOff },
     /// Pickup distance
     Distance { distance: PickupDistance },
+    /// Microphone volume 0-100 (below 50 reads as near, 50-84 standard, from 85 far)
+    Volume {
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
+        volume: u8,
+    },
     /// Keep the microphone on while the camera sleeps
     SleepMic { state: OnOff },
     /// Microphone on/off; off makes the camera restart (about 18 s)
@@ -207,6 +244,10 @@ pub enum FocusCmd {
     Mode { mode: FocusMode },
     /// Continuous autofocus on/off
     Auto { state: OnOff },
+    /// The camera's own autofocus mode: continuous, single (focus once and hold) or manual
+    Af { mode: AutofocusMode },
+    /// Focus once on a point: x and y from 0.0 to 1.0, from the top left of the picture
+    Point { x: f32, y: f32 },
     /// Manual focus 0-100 (turns autofocus off)
     Set { value: i32 },
 }
@@ -323,7 +364,17 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
             Ok((full, text))
         }
         Cmd::Sleep => cam.sleep(true).and_then(|_| done("sleep", Value::Null)),
-        Cmd::Wake => cam.sleep(false).and_then(|_| done("wake", Value::Null)),
+        Cmd::Wake { setting: None } => cam.sleep(false).and_then(|_| done("wake", Value::Null)),
+        Cmd::Wake {
+            setting: Some(WakeCmd::Zoom { factor }),
+        } => cam
+            .set_wake_zoom(factor)
+            .and_then(|percent| done("wake_zoom", json!({"factor": factor, "percent": percent}))),
+        Cmd::Wake {
+            setting: Some(WakeCmd::Mode { mode }),
+        } => cam
+            .set_default_work_mode(mode)
+            .and_then(|_| done("wake_mode", value_name(mode))),
         Cmd::Tracking { mode } => cam
             .set_ai_mode(mode)
             .and_then(|_| done("tracking", value_name(mode))),
@@ -333,10 +384,20 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
         Cmd::Hdr { state } => cam
             .set_hdr(state.get())
             .and_then(|_| done("hdr", json!(onoff(state.get())))),
-        Cmd::Exposure { mode } => match mode {
-            ExposureArg::Manual => cam
-                .set_manual_exposure()
-                .and_then(|_| done("exposure", json!("manual"))),
+        Cmd::Exposure { mode, time, gain } => match mode {
+            ExposureArg::Manual => cam.set_manual_exposure(time, gain).and_then(|_| {
+                done(
+                    "exposure",
+                    if time.is_none() && gain.is_none() {
+                        json!("manual")
+                    } else {
+                        json!({"mode": "manual", "time": time, "gain": gain})
+                    },
+                )
+            }),
+            _ if time.is_some() || gain.is_some() => Err(Error::Invalid(
+                "--time and --gain only go with manual exposure".into(),
+            )),
             ExposureArg::Global => cam
                 .set_exposure_mode(ExposureMode::Global)
                 .and_then(|_| done("exposure", json!("global"))),
@@ -353,9 +414,21 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
         Cmd::Fov { fov } => cam
             .set_field_of_view(fov)
             .and_then(|_| done("fov", value_name(fov))),
-        Cmd::Led { brightness } => cam
+        Cmd::Led {
+            blink: Some(LedCmd::Blink { state }),
+            ..
+        } => cam
+            .set_led_blink(state.get())
+            .and_then(|_| done("led_blink", json!(onoff(state.get())))),
+        Cmd::Led {
+            brightness: Some(brightness),
+            ..
+        } => cam
             .set_led(brightness)
             .and_then(|_| done("led", json!(brightness))),
+        Cmd::Led { .. } => Err(Error::Invalid(
+            "give a brightness 0-3, or `blink on|off`".into(),
+        )),
         Cmd::Mirror { state } => cam
             .set_mirror(state.get())
             .and_then(|_| done("mirror", json!(onoff(state.get())))),
@@ -390,6 +463,9 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
             Audio::Distance { distance } => cam
                 .set_pickup_distance(distance)
                 .and_then(|_| done("audio_distance", value_name(distance))),
+            Audio::Volume { volume } => cam
+                .set_audio_volume(volume)
+                .and_then(|_| done("audio_volume", json!(volume))),
             Audio::SleepMic { state } => cam
                 .set_mic_in_sleep(state.get())
                 .and_then(|_| done("audio_sleep_mic", json!(onoff(state.get())))),
@@ -458,6 +534,12 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
             FocusCmd::Auto { state } => cam
                 .set_autofocus(state.get())
                 .and_then(|_| done("focus_auto", json!(onoff(state.get())))),
+            FocusCmd::Af { mode } => cam
+                .set_autofocus_select(mode)
+                .and_then(|_| done("focus_af", value_name(mode))),
+            FocusCmd::Point { x, y } => cam
+                .focus_point(x, y)
+                .and_then(|_| done("focus_point", json!({"x": x, "y": y}))),
             FocusCmd::Set { value } => cam
                 .set_focus(value)
                 .and_then(|_| done("focus", json!(value))),
@@ -666,6 +748,80 @@ fn report(json: bool, result: Result<()>) -> i32 {
 mod tests {
     use super::*;
     use obsbot4linux::models::MODELS;
+
+    fn parse(args: &str) -> std::result::Result<Cmd, clap::Error> {
+        Cli::try_parse_from(std::iter::once("obsbot4linux").chain(args.split(' ')))
+            .map(|c| c.command)
+    }
+
+    #[test]
+    fn led_keeps_its_plain_brightness_and_gains_blink() {
+        // `led 2` is what clients send today; it must not turn into a subcommand error
+        assert!(matches!(
+            parse("led 2"),
+            Ok(Cmd::Led {
+                brightness: Some(2),
+                blink: None
+            })
+        ));
+        assert!(matches!(
+            parse("led blink on"),
+            Ok(Cmd::Led {
+                brightness: None,
+                blink: Some(LedCmd::Blink { state: OnOff::On })
+            })
+        ));
+        assert!(parse("led 2 blink on").is_err());
+    }
+
+    #[test]
+    fn wake_without_arguments_still_wakes() {
+        assert!(matches!(parse("wake"), Ok(Cmd::Wake { setting: None })));
+        assert!(matches!(
+            parse("wake zoom 2.5"),
+            Ok(Cmd::Wake {
+                setting: Some(WakeCmd::Zoom { .. })
+            })
+        ));
+        assert!(matches!(
+            parse("wake mode upper-body"),
+            Ok(Cmd::Wake {
+                setting: Some(WakeCmd::Mode {
+                    mode: AiMode::UpperBody
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn exposure_manual_takes_time_and_gain_and_volume_is_bounded() {
+        assert!(matches!(
+            parse("exposure manual --time 100 --gain 7"),
+            Ok(Cmd::Exposure {
+                time: Some(100),
+                gain: Some(7),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse("exposure manual"),
+            Ok(Cmd::Exposure {
+                time: None,
+                gain: None,
+                ..
+            })
+        ));
+        assert!(parse("audio volume 100").is_ok());
+        assert!(parse("audio volume 101").is_err());
+        assert!(parse("audio volume -1").is_err());
+        assert!(matches!(
+            parse("focus af single"),
+            Ok(Cmd::Focus(FocusCmd::Af {
+                mode: AutofocusMode::Single
+            }))
+        ));
+        assert!(parse("focus point 0.3 0.4").is_ok());
+    }
 
     #[test]
     fn detect_prints_the_model_and_the_streaming_node() {

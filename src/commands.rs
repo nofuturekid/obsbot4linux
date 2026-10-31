@@ -35,6 +35,12 @@ setting!(TrackingSpeed { Standard = 0, Sport = 2 });
 setting!(SleepBackground { Black = 0, Image = 1 });
 setting!(HandSide { Right = 0, Left = 1 });
 setting!(
+    /// Autofocus mode of the camera (command 0x3442, query 0x3402): `continuous` keeps refocusing
+    /// (status byte 0x0e is 1), `single` focuses once and holds, `manual` takes the position of
+    /// `focus set`. Measured on a Tiny 2 Lite: 1 sets byte 0x0e, 2 and 3 clear it.
+    AutofocusMode { Continuous = 1, Single = 2, Manual = 3 }
+);
+setting!(
     /// Automatic exposure mode. The camera reports it only as status byte 0x07 (face);
     /// obsbot4linux also remembers the last one set. Manual exposure goes over UVC.
     ExposureMode { Global = 0, Face = 1 }
@@ -133,6 +139,31 @@ pub fn led(brightness: u8) -> Result<[u8; 3]> {
         return Err(invalid("LED brightness is 0-3"));
     }
     Ok([0x1a, 0x01, brightness])
+}
+/// Status LED blinking (true) or steady (false). Not part of the status block.
+pub fn led_blink(on: bool) -> [u8; 3] {
+    [0x18, 0x01, on as u8]
+}
+/// Zoom after waking up, 0-100 (factor 1 + 3 * percent / 100). The camera keeps 100 for anything
+/// above (measured), so this refuses it instead.
+pub fn wake_zoom(percent: u8) -> Result<[u8; 4]> {
+    if percent > 100 {
+        return Err(invalid("wake-up zoom is 0-100 percent"));
+    }
+    Ok([0x15, 0x02, 0x64, percent])
+}
+/// The wake-up zoom factor (1.0-4.0) as the 0-100 the camera stores.
+pub fn wake_zoom_percent(factor: f32) -> Result<u8> {
+    if !(1.0..=4.0).contains(&factor) {
+        return Err(invalid("wake-up zoom factor is 1.0-4.0"));
+    }
+    Ok(((factor - 1.0) * 100.0 / 3.0).round() as u8)
+}
+/// Work mode the camera starts in: main mode in the high nibble, sub-mode in the low one, the
+/// same pair as the AI mode (status byte 0x20). The camera ignores values from 0x60 up.
+pub fn default_work_mode(mode: AiMode) -> [u8; 3] {
+    let [main, sub] = mode.to_bytes();
+    [0x19, 0x01, main << 4 | sub]
 }
 pub fn field_of_view(fov: FieldOfView) -> [u8; 3] {
     [0x04, 0x01, fov.to_u8()]
@@ -254,6 +285,33 @@ pub fn hand_return_reset(seq: u16) -> [u8; FRAME_SIZE] {
 /// Autofocus mode: face (true) or global (false). Receiver 2, u32 (capture 12).
 pub fn autofocus_mode(face: bool, seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0x3602, &(face as u32).to_le_bytes(), seq)
+}
+/// Microphone volume 0-100 (receiver 2, i16). Status byte 0x22 follows: below 50 near, 50-84
+/// standard, from 85 far.
+pub fn audio_volume(volume: u8, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if volume > 100 {
+        return Err(invalid("microphone volume is 0-100"));
+    }
+    Ok(frame(POWER, 0x8102, &i16::from(volume).to_le_bytes(), seq))
+}
+/// Autofocus mode (receiver 2, u32).
+pub fn autofocus_mode_select(mode: AutofocusMode, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(POWER, 0x3442, &u32::from(mode.to_u8()).to_le_bytes(), seq)
+}
+/// Focus once on a point of the picture, x and y in 0..1 from the top left (receiver 2): f32 x,
+/// f32 y, u32 action 1, then the search bracket towards infinity and macro, both 100 (the
+/// camera's own default window). The camera switches to single autofocus.
+pub fn focus_point(x: f32, y: f32, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err(invalid("focus point x and y are 0.0-1.0"));
+    }
+    let mut data = Vec::with_capacity(20);
+    data.extend_from_slice(&x.to_le_bytes());
+    data.extend_from_slice(&y.to_le_bytes());
+    for v in [1u32, 100, 100] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(frame(POWER, 0x3582, &data, seq))
 }
 /// Zone tracking: automatically follow new targets.
 pub fn zone_follow(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
@@ -500,6 +558,47 @@ mod tests {
         assert_eq!(hdr(true), [0x01, 0x01, 0x01]);
         // a short command, never the framed 0x3904 that arms the zone-Static flag (#79)
         assert_eq!(startup_go(), [0x00, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn led_blink_and_wake_settings() {
+        assert_eq!(led_blink(true), [0x18, 0x01, 0x01]);
+        assert_eq!(led_blink(false), [0x18, 0x01, 0x00]);
+        assert_eq!(wake_zoom(33).unwrap(), [0x15, 0x02, 0x64, 33]);
+        assert!(wake_zoom(101).is_err());
+        // 2.0x is the camera's own default (0x21 = 33), 4.0x is the end of the range
+        assert_eq!(wake_zoom_percent(2.0).unwrap(), 33);
+        assert_eq!(wake_zoom_percent(1.0).unwrap(), 0);
+        assert_eq!(wake_zoom_percent(4.0).unwrap(), 100);
+        assert!(wake_zoom_percent(4.1).is_err() && wake_zoom_percent(0.9).is_err());
+        // main nibble, sub nibble: upper body is mode 2 / sub 1, the camera reads 0x21 back
+        assert_eq!(default_work_mode(AiMode::Static), [0x19, 0x01, 0x00]);
+        assert_eq!(default_work_mode(AiMode::UpperBody), [0x19, 0x01, 0x21]);
+        assert_eq!(default_work_mode(AiMode::Group), [0x19, 0x01, 0x10]);
+        assert_eq!(default_work_mode(AiMode::Hand), [0x19, 0x01, 0x30]);
+    }
+
+    /// Frames built independently (CRC-16/USB computed in Python) for payloads whose effect was
+    /// read back from a Tiny 2 Lite on firmware 6.2.8.1: volume 0x37 read back as 55 ("standard"),
+    /// mode 3 as 3, the point (0.3, 0.4) as sent with the camera in single autofocus. OBSBOT Center
+    /// sends none of these, so there is no capture to compare with.
+    #[test]
+    fn audio_and_focus_frames_hold_what_the_camera_read_back() {
+        assert_captured(
+            audio_volume(0x37, 0x10).unwrap(),
+            "aa2510000c00d8f00a0202810200e8363700",
+        );
+        assert!(audio_volume(101, 0).is_err());
+        assert_captured(
+            autofocus_mode_select(AutofocusMode::Manual, 0x11),
+            "aa2511000c0079420a0242340400be4303000000",
+        );
+        assert_captured(
+            focus_point(0.3, 0.4, 0x12).unwrap(),
+            "aa2512000c00188d0a0282351400e5fb9a99993ecdcccc3e010000006400000064000000",
+        );
+        assert!(focus_point(1.1, 0.5, 0).is_err());
+        assert!(focus_point(0.5, f32::NAN, 0).is_err());
     }
 
     #[test]

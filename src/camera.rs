@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
 use crate::presets::{self, MAX_ZOOM, Pose, Preset, StartupActions};
 use crate::state::{Startup, State};
-use crate::status::{ModelInfo, Status, Target, Tracking, firmware_version};
+use crate::status::{Focus, ModelInfo, Status, Target, Tracking, firmware_version};
 use crate::streaming;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -35,12 +35,14 @@ pub const CAPABILITIES: &[&str] = &[
     "gimbal",
     "fov",
     "led",
+    "led_blink",
     "mirror",
     "invert",
     "auto_sleep",
     "sleep_background",
     "sleep_background_mirror",
     "audio",
+    "audio_volume",
     "gesture",
     "hand",
     "zone",
@@ -48,6 +50,11 @@ pub const CAPABILITIES: &[&str] = &[
     "zone_return",
     "hand_return",
     "focus",
+    "focus_af_mode",
+    "focus_point",
+    "wake_zoom",
+    "wake_mode",
+    "exposure_values",
     "startup",
     "image",
     "preset",
@@ -143,6 +150,12 @@ pub struct FullStatus {
     /// Tracking target from query 0x01c4; None while Static or when the camera gave no usable answer.
     pub target: Option<Target>,
     pub image: BTreeMap<String, ImageControl>,
+    /// Microphone volume 0-100 from query 0x80c2; null while asleep or when the camera did not
+    /// answer.
+    pub audio_volume: Option<u8>,
+    /// Autofocus mode, manual position and focus window from query 0x3642; null like
+    /// `audio_volume`.
+    pub focus: Option<Focus>,
     pub state: StateView,
     /// Zone tracking area, follow and return position read from the camera; None when it did not
     /// answer the queries.
@@ -320,6 +333,25 @@ impl Camera {
         Ok(Target::decode(&self.query(0x01c4)?))
     }
 
+    /// Query 0x80c2: the microphone volume (i16, 0..100).
+    pub fn audio_volume(&self) -> Result<u8> {
+        let d = self.query_to(0x02, 0x80c2)?;
+        let v = i16::from_le_bytes(
+            d.get(..2)
+                .and_then(|s| s.try_into().ok())
+                .ok_or(Error::NoAnswer(0x80c2))?,
+        );
+        u8::try_from(v)
+            .ok()
+            .filter(|v| *v <= 100)
+            .ok_or(Error::NoAnswer(0x80c2))
+    }
+
+    /// Query 0x3642: autofocus mode, manual position and focus window.
+    pub fn focus(&self) -> Result<Focus> {
+        Focus::decode(&self.query_to(0x02, 0x3642)?).ok_or(Error::NoAnswer(0x3642))
+    }
+
     pub fn image_controls(&self) -> Result<BTreeMap<String, ImageControl>> {
         let mut map = BTreeMap::new();
         for (name, id) in IMAGE_CONTROLS {
@@ -452,6 +484,12 @@ impl Camera {
         let absolute = self.dev.get_ctrl(ZOOM_ABSOLUTE).ok();
         let detected = self.dev.detected();
         let streaming_apps = streaming::apps_using(&detected.device);
+        // an asleep camera does not answer these; asking would only wait out the polling
+        let (audio_volume, focus) = if status.asleep {
+            (None, None)
+        } else {
+            (self.audio_volume().ok(), self.focus().ok())
+        };
         let target = if status.ai_mode == Some(AiMode::Static) {
             None
         } else {
@@ -480,6 +518,8 @@ impl Camera {
             pose: self.live_pose().ok(),
             target,
             image: self.image_controls()?,
+            audio_volume,
+            focus,
             state: StateView {
                 remembered: State::load(),
                 zone_follow: zone.as_ref().map(|z| z.follow),
@@ -534,6 +574,19 @@ impl Camera {
     pub fn set_led(&self, brightness: u8) -> Result<()> {
         self.short(&cmd::led(brightness)?)
     }
+    pub fn set_led_blink(&self, on: bool) -> Result<()> {
+        self.short(&cmd::led_blink(on))
+    }
+    /// Zoom after waking up: factor 1.0-4.0, stored as 0-100 percent (status `wake_up_zoom_percent`).
+    pub fn set_wake_zoom(&self, factor: f32) -> Result<u8> {
+        let percent = cmd::wake_zoom_percent(factor)?;
+        self.short(&cmd::wake_zoom(percent)?)?;
+        Ok(percent)
+    }
+    /// Work mode the camera starts in (status `default_work_mode`); the current AI mode stays.
+    pub fn set_default_work_mode(&self, mode: AiMode) -> Result<()> {
+        self.short(&cmd::default_work_mode(mode))
+    }
     pub fn set_field_of_view(&self, fov: FieldOfView) -> Result<()> {
         self.short(&cmd::field_of_view(fov))
     }
@@ -551,6 +604,11 @@ impl Camera {
     }
     pub fn set_auto_gain(&self, on: bool) -> Result<()> {
         self.short(&cmd::auto_gain(on))
+    }
+    /// Microphone volume 0-100; the pickup distance in the status follows (near below 50,
+    /// standard 50-84, far from 85).
+    pub fn set_audio_volume(&self, volume: u8) -> Result<()> {
+        self.framed(&cmd::audio_volume(volume, self.seq.next())?)
     }
     pub fn set_pickup_distance(&self, d: PickupDistance) -> Result<()> {
         self.short(&cmd::pickup_distance(d))
@@ -635,6 +693,17 @@ impl Camera {
         self.framed(&cmd::autofocus_mode(face, self.seq.next()))
     }
 
+    /// The camera's own autofocus mode (status byte 0x0e is 1 only in continuous).
+    pub fn set_autofocus_select(&self, mode: AutofocusMode) -> Result<()> {
+        self.framed(&cmd::autofocus_mode_select(mode, self.seq.next()))
+    }
+
+    /// Focuses once on a point of the picture (x and y 0..1 from the top left); the camera
+    /// switches to single autofocus.
+    pub fn focus_point(&self, x: f32, y: f32) -> Result<()> {
+        self.framed(&cmd::focus_point(x, y, self.seq.next())?)
+    }
+
     /// Continuous autofocus on/off (UVC focus_automatic_continuous; status byte 0x0e follows).
     pub fn set_autofocus(&self, on: bool) -> Result<()> {
         self.dev.set_ctrl(FOCUS_AUTO, on as i32)
@@ -694,11 +763,26 @@ impl Camera {
     }
 
     /// Manual exposure: V4L2 auto_exposure 1, after which the image controls exposure_time
-    /// (up to about 330 at 30 fps, one frame) and gain take effect. OBSBOT Center does this with
-    /// frames 0x2442 / 0x2982, which are not decoded; the UVC way was checked on camera images
-    /// (mean brightness 115 auto, 149 at exposure_time 100, 179 at 330).
-    pub fn set_manual_exposure(&self) -> Result<()> {
-        self.dev.set_ctrl(EXPOSURE_AUTO, 1)
+    /// (100 us units, 1-2500; the camera takes the step at or below it) and gain take effect.
+    /// With `time` and `gain` they are set right after, only once both are in range. The camera's
+    /// own frames 0x2442 / 0x2982 do the same (checked by reading the mode and shutter back with
+    /// 0x2942 and by the image brightness) but leave these UVC values stale, so the UVC way is
+    /// the one that keeps `status.image` true. Never set the time while the exposure is
+    /// automatic: it freezes the automatic exposure.
+    pub fn set_manual_exposure(&self, time: Option<i32>, gain: Option<i32>) -> Result<()> {
+        let values = [("exposure_time", time), ("gain", gain)];
+        for (name, value) in values {
+            if let Some(v) = value {
+                self.image_id_in_range(name, v)?;
+            }
+        }
+        self.dev.set_ctrl(EXPOSURE_AUTO, 1)?;
+        for (name, value) in values {
+            if let Some(v) = value {
+                self.set_image(name, v)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn factory_reset(&self) -> Result<()> {
@@ -743,7 +827,8 @@ impl Camera {
             .ok_or_else(|| Error::Invalid(format!("unknown image control '{name}'")))
     }
 
-    pub fn set_image(&self, name: &str, value: i32) -> Result<()> {
+    /// The control id of `name` when the camera has it and `value` is in its range.
+    fn image_id_in_range(&self, name: &str, value: i32) -> Result<u32> {
         let id = Self::image_id(name)?;
         let r = self
             .dev
@@ -752,7 +837,12 @@ impl Camera {
         if value < r.min || value > r.max {
             return Err(Error::Invalid(format!("{name} is {}-{}", r.min, r.max)));
         }
-        self.dev.set_ctrl(id, value)
+        Ok(id)
+    }
+
+    pub fn set_image(&self, name: &str, value: i32) -> Result<()> {
+        self.dev
+            .set_ctrl(self.image_id_in_range(name, value)?, value)
     }
 
     // --- presets ---
@@ -921,6 +1011,8 @@ mod full_status_tests {
             pose: None,
             target: None,
             image: BTreeMap::new(),
+            audio_volume: Some(10),
+            focus: None,
             state: StateView {
                 remembered: State::default(),
                 zone_follow: Some(true),

@@ -6,7 +6,7 @@
 //! Offsets are those of the Tiny 2 Lite, see the protocol reference `status-block.md`.
 
 use crate::commands::{
-    AiMode, HandSide, NoiseReduction, PickupDistance, SleepBackground, TrackingSpeed,
+    AiMode, AutofocusMode, HandSide, NoiseReduction, PickupDistance, SleepBackground, TrackingSpeed,
 };
 use serde::Serialize;
 
@@ -165,6 +165,30 @@ pub fn firmware_version(d: &[u8]) -> Option<String> {
     Some(format!("{}.{}.{}.{}", v[3], v[2], v[1], v[0]))
 }
 
+/// The autofocus state from query 0x3642 (36 bytes: u32 mode, u32 manual position, f32 x and y of
+/// the focus window, then words that are not decoded).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Focus {
+    pub mode: AutofocusMode,
+    /// Manual focus position 0-100; kept while another mode is active.
+    pub position: u8,
+    /// Centre of the focus window, 0..1 from the top left; 0.5 / 0.5 unless `focus point` moved it.
+    pub point: [f32; 2],
+}
+
+impl Focus {
+    pub fn decode(d: &[u8]) -> Option<Self> {
+        let word = |i: usize| d.get(i * 4..i * 4 + 4)?.try_into().ok();
+        let u = |i| word(i).map(u32::from_le_bytes);
+        let f = |i| word(i).map(f32::from_le_bytes).filter(|v| v.is_finite());
+        Some(Self {
+            mode: AutofocusMode::from_u8(u8::try_from(u(0)?).ok()?)?,
+            position: u8::try_from(u(1)?).ok().filter(|p| *p <= 100)?,
+            point: [f(2)?, f(3)?],
+        })
+    }
+}
+
 /// The 12-byte answer to query 0x0104.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Tracking {
@@ -304,6 +328,49 @@ mod tests {
         assert_eq!(s.wake_up_zoom_percent, 300, "u16, not just the low byte");
         assert_eq!(s.sleep_images, [1, 3], "bit n is mask<n>.jpg");
         assert_eq!(s.default_work_mode, WorkMode { main: 2, sub: 1 });
+    }
+
+    #[test]
+    fn focus_from_live_camera() {
+        // Real 0x3642 answers (firmware 6.2.8.1): continuous at the centre; manual at 0x32 (50);
+        // single autofocus after `focus point 0.3 0.4`.
+        let hex = |s: &str| hex::decode(s).unwrap();
+        let f = Focus::decode(&hex(
+            "01000000000000000000003f0000003f0000000000000000640000000000000001000000",
+        ))
+        .unwrap();
+        assert_eq!(
+            (f.mode, f.position, f.point),
+            (AutofocusMode::Continuous, 0, [0.5, 0.5])
+        );
+        let f = Focus::decode(&hex(
+            "03000000320000000000003f0000003f0000000000000000640000000000000001000000",
+        ))
+        .unwrap();
+        assert_eq!((f.mode, f.position), (AutofocusMode::Manual, 50));
+        let f = Focus::decode(&hex(
+            "02000000000000009a99993ecdcccc3e0100000000000000640000000000000001000000",
+        ))
+        .unwrap();
+        assert_eq!(f.mode, AutofocusMode::Single);
+        assert!((f.point[0] - 0.3).abs() < 1e-6 && (f.point[1] - 0.4).abs() < 1e-6);
+        let json = serde_json::to_value(&f).unwrap();
+        assert_eq!(json["mode"], "single");
+    }
+
+    #[test]
+    fn focus_garbled_answers_are_none() {
+        let mut d = hex::decode("03000000320000000000003f0000003f").unwrap();
+        assert!(Focus::decode(&d).is_some());
+        assert_eq!(Focus::decode(&d[..15]), None, "short");
+        d[0] = 7;
+        assert_eq!(Focus::decode(&d), None, "unknown mode");
+        d[0] = 3;
+        d[4] = 101;
+        assert_eq!(Focus::decode(&d), None, "position above 100");
+        d[4] = 50;
+        d[8..12].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(Focus::decode(&d), None, "NaN point");
     }
 
     #[test]
