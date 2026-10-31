@@ -5,6 +5,30 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `zone view list|save|rename|delete|go` stores, lists and goes to named poses in the camera
+  (`0x1344`, `0x1384`, `0x1544`, `0x13c4`, `0x1604`); `status.zone.views` lists them. They are not
+  exclusion areas, the camera does not track by them. Capability `zone_views` (#74).
+- `hand area --pan MIN MAX --tilt MIN MAX` and `hand area-reset` set the hand tracking area
+  (`0x2044`..`0x21c4`) and put it back to the default (`0x25c4`..`0x2684`); `hand gimbal on|off`
+  lets the hand tracker move the gimbal or holds it (`0x26c4`). Capabilities `hand_area`,
+  `hand_gimbal` (#75).
+- `hand pan on|off`, `hand tilt on|off` and `hand return-after <seconds>` (`0x2344`, `0x23c4`,
+  `0x2444`); `status.hand` has `pan_enabled`, `tilt_enabled` and `return_after`. Capabilities
+  `hand_axes`, `hand_return_after` (#85).
+
+### Fixed
+
+- A reply without a data section (type `0x09`, what the camera answers to the view list while it
+  has none) counted as "no answer" and ran into the poll timeout; it now reads as empty.
+
+### Changed
+
+- `zone.return` stays a pose: the leading word of `0x4ec4` is the preset id, always 0, so the
+  camera has no "not set" for it (#57). `0x5084` has no handler in the firmware; it is still sent
+  with `0x08c4` until `0x08c4` alone is tried on the camera (#81).
+
 ## [0.11.1] - 2026-10-31
 
 ### Added

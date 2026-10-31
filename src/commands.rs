@@ -251,6 +251,8 @@ pub fn invert(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
     frame(TRACKING, 0x3b84, &[on as u8], seq)
 }
 /// Zone tracking is a pair of frames that must be sent about 100 ms apart.
+/// The second frame, `0x5084`, has no handler in firmware 6.2.8.1 (static analysis); `0x08c4`
+/// alone may be enough. Not tried on the camera, so the pair stays as OBSBOT Center sends it (#81).
 pub fn zone_tracking(on: bool, seq1: u16, seq2: u16) -> [[u8; FRAME_SIZE]; 2] {
     [
         frame(TRACKING, 0x08c4, &[on as u8], seq1),
@@ -275,6 +277,36 @@ pub fn zone_area(
     pitch: (f32, f32),
     seqs: [u16; 4],
 ) -> Result<[[u8; FRAME_SIZE]; 4]> {
+    area(
+        "zone area",
+        [0x4c04, 0x4c84, 0x4d04, 0x4d84],
+        yaw,
+        pitch,
+        seqs,
+    )
+}
+/// The hand tracking area: the same four values as [`zone_area`] under their own ids
+/// (`0x2044`, `0x20c4`, `0x2144`, `0x21c4`; capture 11).
+pub fn hand_area(
+    yaw: (f32, f32),
+    pitch: (f32, f32),
+    seqs: [u16; 4],
+) -> Result<[[u8; FRAME_SIZE]; 4]> {
+    area(
+        "hand area",
+        [0x2044, 0x20c4, 0x2144, 0x21c4],
+        yaw,
+        pitch,
+        seqs,
+    )
+}
+fn area(
+    what: &str,
+    ids: [u16; 4],
+    yaw: (f32, f32),
+    pitch: (f32, f32),
+    seqs: [u16; 4],
+) -> Result<[[u8; FRAME_SIZE]; 4]> {
     // In the camera's own angles: yaw positive = camera left, pitch positive = down (as 0x6444).
     // OBSBOT Center offers yaw -100..100, pitch -30..30 (captures 11, 18); the camera stores
     // more, and zone tracking measured on a Tiny 2 Lite keeps to a tilt of 45 (stopped at 48.7,
@@ -284,16 +316,46 @@ pub fn zone_area(
     };
     let pitch_range = (-GIMBAL_TILT_MAX, -GIMBAL_TILT_MIN);
     if !ok(yaw, (-GIMBAL_PAN_LIMIT, GIMBAL_PAN_LIMIT)) || !ok(pitch, pitch_range) {
-        return Err(invalid(
-            "zone area: min must be below max, pan within -150..150, tilt within -70..90",
-        ));
+        return Err(invalid(&format!(
+            "{what}: min must be below max, pan within -150..150, tilt within -70..90"
+        )));
     }
-    Ok([
-        frame(TRACKING, 0x4c04, &yaw.0.to_le_bytes(), seqs[0]),
-        frame(TRACKING, 0x4c84, &yaw.1.to_le_bytes(), seqs[1]),
-        frame(TRACKING, 0x4d04, &pitch.0.to_le_bytes(), seqs[2]),
-        frame(TRACKING, 0x4d84, &pitch.1.to_le_bytes(), seqs[3]),
-    ])
+    let values = [yaw.0, yaw.1, pitch.0, pitch.1];
+    Ok([0, 1, 2, 3].map(|i| frame(TRACKING, ids[i], &values[i].to_le_bytes(), seqs[i])))
+}
+/// Sets every bound of the hand tracking area back to the camera's default (-45..45 pan, -30..30
+/// tilt): one frame per bound, no data. The reset ids are `0x25c4`, `0x2604`, `0x2644`, `0x2684`;
+/// libdev's names for them swap min and max against the firmware's, which does not matter when
+/// all four are sent.
+pub fn hand_area_reset(seqs: [u16; 4]) -> [[u8; FRAME_SIZE]; 4] {
+    [0x25c4, 0x2604, 0x2644, 0x2684]
+        .into_iter()
+        .zip(seqs)
+        .map(|(id, seq)| frame(TRACKING, id, &[], seq))
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("four ids, four seqs")
+}
+/// Whether the hand tracker may pan (`0x2344`).
+pub fn hand_pan(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x2344, &[on as u8], seq)
+}
+/// Whether the hand tracker may tilt (`0x23c4`).
+pub fn hand_tilt(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x23c4, &[on as u8], seq)
+}
+/// Seconds the hand may stay outside the area before the gimbal goes to the return position
+/// (`0x2444`, f32).
+pub fn hand_return_after(seconds: f32, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(invalid("hand return time is 0 seconds or more"));
+    }
+    Ok(frame(TRACKING, 0x2444, &seconds.to_le_bytes(), seq))
+}
+/// Whether the hand tracker may move the gimbal at all (`0x26c4`). Not stored by the camera; with
+/// 0 it stops the gimbal. OBSBOT Center sends 0 while its hand area dialog is open and 1 on OK.
+pub fn hand_gimbal(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x26c4, &[on as u8], seq)
 }
 /// Moves the gimbal to the boot pose (the start pose of the initial state). Does not store
 /// anything. Short command `00`: the camera sends the AI request 0x3904 itself. Center's framed
@@ -617,6 +679,93 @@ mod tests {
         assert_captured(frames[1], "aa25af010c00a1b30a04844c040069f60000c842");
         assert_captured(frames[2], "aa25b0010c0030160a04044d04003b970000f0c1");
         assert_captured(frames[3], "aa25b1010c0000130a04844d04003a370000f041");
+    }
+
+    #[test]
+    fn hand_area_matches_capture() {
+        // capture 11 (hand settings dialog, default area): pan -45..45, pitch -30..30
+        let frames = hand_area((-45.0, 45.0), (-30.0, 30.0), [397, 398, 399, 400]).unwrap();
+        for (f, hex) in frames.into_iter().zip([
+            "aa258d010c00513e0a04442004002956000034c2",
+            "aa258e010c00c0f10a04c420040028f600003442",
+            "aa258f010c0031340a04442104003b970000f0c1",
+            "aa2590010c0061510a04c42104003a370000f041",
+        ]) {
+            assert_captured(f, hex);
+        }
+        assert!(hand_area((10.0, -10.0), (-30.0, 30.0), [0; 4]).is_err());
+        assert!(hand_area((-45.0, 45.0), (-30.0, 90.5), [0; 4]).is_err());
+        assert!(hand_area((-45.0, 45.0), (-30.0, 30.0), [0; 4]).is_ok());
+    }
+
+    #[test]
+    fn hand_gimbal_matches_capture() {
+        assert_captured(
+            hand_gimbal(false, 396),
+            "aa258c010c00e1390a04c4260100e63f00",
+        );
+        assert_captured(hand_gimbal(true, 402), "aa2592010c0081590a04c426010027ff01");
+    }
+
+    #[test]
+    fn hand_axes_and_return_time_use_the_firmware_ids() {
+        // not captured: the ids come from the firmware inventory (static), the bodies are the
+        // u8 / f32 the handlers read
+        let f = hand_pan(false, 1);
+        assert_eq!((f[10..12].to_vec(), f[12], f[16]), (vec![0x44, 0x23], 1, 0));
+        let f = hand_tilt(true, 1);
+        assert_eq!((f[10..12].to_vec(), f[12], f[16]), (vec![0xc4, 0x23], 1, 1));
+        let f = hand_return_after(2.5, 1).unwrap();
+        assert_eq!(f[10..12], [0x44, 0x24]);
+        assert_eq!(f[16..20], 2.5f32.to_le_bytes());
+        assert!(hand_return_after(-1.0, 0).is_err());
+        assert!(hand_return_after(f32::NAN, 0).is_err());
+    }
+
+    #[test]
+    fn hand_area_reset_sends_one_empty_frame_per_bound() {
+        let ids: Vec<u16> = hand_area_reset([1, 2, 3, 4])
+            .iter()
+            .map(|f| {
+                assert_eq!(f[12..14], [0, 0], "no data");
+                u16::from_le_bytes([f[10], f[11]])
+            })
+            .collect();
+        assert_eq!(ids, [0x25c4, 0x2604, 0x2644, 0x2684]);
+    }
+
+    #[test]
+    fn no_zone_or_hand_command_arms_the_zone_static_flag() {
+        // The camera arms the flag by command id alone (README, "Commands that arm the zone
+        // Static flag"): a new command in one of these ranges would break the zone return.
+        let armed =
+            |id: u16| matches!(id >> 6, 0xe7 | 0xf7 | 0xe4) || (0x6600..=0x663f).contains(&id);
+        assert!(armed(0x39c4) && armed(0x3dc4) && armed(0x3904) && armed(0x6604));
+        let s = [1; 4];
+        let id = |f: [u8; FRAME_SIZE]| u16::from_le_bytes([f[10], f[11]]);
+        let mut frames = vec![
+            hand_pan(true, 1),
+            hand_tilt(true, 1),
+            hand_gimbal(true, 1),
+            hand_return_after(1.0, 1).unwrap(),
+        ];
+        frames.extend(hand_area_reset(s));
+        frames.extend(hand_area((-1.0, 1.0), (-1.0, 1.0), s).unwrap());
+        let pose = crate::presets::Pose {
+            pan: 0.0,
+            tilt: 0.0,
+            zoom: 1.0,
+        };
+        frames.push(crate::presets::view_add(0, pose, 1).unwrap());
+        frames.push(crate::presets::view_rename(0, "a", 1).unwrap());
+        frames.push(crate::presets::view_remove(0, 1));
+        frames.push(crate::presets::view_go(0, 1));
+        for q in [0x1344, 0x1444, 0x1504, 0x2004, 0x2484] {
+            assert!(!armed(q), "query {q:#06x}");
+        }
+        for f in frames {
+            assert!(!armed(id(f)), "command {:#06x}", id(f));
+        }
     }
 
     #[test]

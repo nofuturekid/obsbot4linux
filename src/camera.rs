@@ -7,7 +7,7 @@ use crate::commands::{self as cmd, *};
 use crate::device::{CtrlRange, Device};
 use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
-use crate::presets::{self, MAX_ZOOM, Pose, Preset, StartupActions, StartupAi};
+use crate::presets::{self, MAX_ZOOM, Pose, Preset, StartupActions, StartupAi, ZoneView};
 use crate::state::{Startup, State};
 use crate::status::{Focus, ModelInfo, Status, Target, Tracking, firmware_version};
 use crate::streaming;
@@ -54,7 +54,12 @@ pub const CAPABILITIES: &[&str] = &[
     "zone",
     "zone_follow",
     "zone_return",
+    "zone_views",
     "hand_return",
+    "hand_area",
+    "hand_axes",
+    "hand_return_after",
+    "hand_gimbal",
     "focus",
     "focus_af_mode",
     "focus_point",
@@ -212,9 +217,14 @@ pub struct Zone {
     pub tilt_max: f32,
     /// Automatically follow new targets.
     pub follow: bool,
-    /// Where the zone tracking returns to (`zone return-here` sets it, `zone return-go` moves there).
+    /// Where the zone tracking returns to (`zone return-here` sets it, `zone return-go` moves
+    /// there). Always a pose: the camera has no "not set" for it. The leading word of the `0x4ec4`
+    /// answer is the preset id (0 here), not a marker, and a fresh camera answers 0 / 0 / 1.0, so
+    /// a return position of 0 / 0 / 1.0 cannot be told from one never set.
     #[serde(rename = "return")]
     pub return_pose: Pose,
+    /// The named poses stored with `zone view save`; None when the camera did not answer.
+    pub views: Option<Vec<ZoneView>>,
 }
 
 /// Hand tracking settings as the camera reports them, in obsbot4linux's angles (pan positive =
@@ -225,6 +235,13 @@ pub struct Hand {
     /// Where the camera goes after the hand leaves the tracking range; None while none is set.
     #[serde(rename = "return")]
     pub return_pose: Option<Pose>,
+    /// Whether the hand tracker may pan (`hand pan`); None if the answer was too short.
+    pub pan_enabled: Option<bool>,
+    /// Whether the hand tracker may tilt (`hand tilt`).
+    pub tilt_enabled: Option<bool>,
+    /// Seconds the hand may stay outside the area before the gimbal returns (`hand return-after`,
+    /// query `0x2484`); None if the camera did not answer.
+    pub return_after: Option<f32>,
 }
 
 /// The angles around the camera's centre in which a hand is tracked.
@@ -356,12 +373,18 @@ impl Camera {
     fn query_to(&self, receiver: u8, command: u16) -> Result<Vec<u8>> {
         let seq = self.seq.next();
         self.framed(&query_frame(receiver, command, seq))?;
+        self.answer(command, seq)
+    }
+
+    /// Polls selector 2 for the answer to the query with `seq`.
+    fn answer(&self, command: u16, seq: u16) -> Result<Vec<u8>> {
         for _ in 0..REPLY_ATTEMPTS {
             sleep(REPLY_GAP);
             // a read before the answer is ready can fail; just poll again
             if let Ok(reply) = self.dev.xu_get(2) {
                 match parse_answer(&reply, seq) {
                     Some(Answer::Value(data)) => return Ok(data.to_vec()),
+                    Some(Answer::Empty) => return Ok(Vec::new()),
                     Some(Answer::Rejected(code)) => return Err(Error::Rejected(command, code)),
                     None => {}
                 }
@@ -448,6 +471,7 @@ impl Camera {
         let pitch_min = self.query_f32(0x4d44)?;
         let pitch_max = self.query_f32(0x4dc4)?;
         let follow = self.query(0x4e44)?;
+        // the lead word is the preset id (always 0), see [`Zone::return_pose`]
         let (_, return_pose) =
             presets::parse_pose(&self.query(0x4ec4)?).ok_or(Error::NoAnswer(0x4ec4))?;
         Ok(Zone {
@@ -457,6 +481,7 @@ impl Camera {
             tilt_max: -pitch_min + 0.0,
             follow: follow.first().ok_or(Error::NoAnswer(0x4e44))? != &0,
             return_pose,
+            views: self.zone_views().ok(),
         })
     }
 
@@ -482,7 +507,29 @@ impl Camera {
                 tilt_max: -float(2)? + 0.0,
             },
             return_pose: (lead != u32::MAX).then_some(pose),
+            // bytes 22 and 23 of the 0x2004 answer; both 1 on a camera nothing was changed on
+            pan_enabled: area.get(22).map(|b| *b != 0),
+            tilt_enabled: area.get(23).map(|b| *b != 0),
+            return_after: self.query_f32(0x2484).ok().filter(|s| *s >= 0.0),
         })
+    }
+
+    /// Zone views: `0x1344` lists the ids (an answer without data when there are none), then
+    /// `0x1504` gives the name and `0x1444` the pose of each. None of these ids arms the zone
+    /// Static flag.
+    pub fn zone_views(&self) -> Result<Vec<ZoneView>> {
+        let mut views = Vec::new();
+        for id in presets::parse_view_ids(&self.query(0x1344)?) {
+            let ask = |command| {
+                let seq = self.seq.next();
+                self.framed(&presets::view_query(command, id, seq))?;
+                self.answer(command, seq)
+            };
+            let name = presets::parse_view_name(&ask(0x1504)?);
+            let (_, pose) = presets::parse_pose(&ask(0x1444)?).ok_or(Error::NoAnswer(0x1444))?;
+            views.push(ZoneView { id, name, pose });
+        }
+        Ok(views)
     }
 
     /// Query `0x3884`: the start pose of the initial state. The leading number is 0-2 for a
@@ -768,29 +815,105 @@ impl Camera {
         Ok(())
     }
 
-    /// Sets the current pose (live pose 0x0043 and zoom 0x6804) as the zone return position and
-    /// returns it.
-    pub fn set_zone_return_here(&self) -> Result<Pose> {
+    /// The pose the camera is in now: live pose (0x0043) and zoom (0x6804), neither of which arms
+    /// the zone Static flag.
+    fn live_pose_and_zoom(&self) -> Result<Pose> {
         let live = self.live_pose()?;
-        let pose = Pose {
+        Ok(Pose {
             pan: live.pan as f32,
             tilt: live.tilt as f32 + 0.0, // no -0
             zoom: self.zoom_factor()?.clamp(1.0, MAX_ZOOM),
-        };
+        })
+    }
+
+    /// Sets the current pose (live pose 0x0043 and zoom 0x6804) as the zone return position and
+    /// returns it.
+    pub fn set_zone_return_here(&self) -> Result<Pose> {
+        let pose = self.live_pose_and_zoom()?;
         self.framed(&presets::zone_return_set(pose, self.seq.next())?)?;
         Ok(pose)
     }
 
     /// Sets the current pose as the hand-tracking return position and returns it.
     pub fn set_hand_return_here(&self) -> Result<Pose> {
-        let live = self.live_pose()?;
-        let pose = Pose {
-            pan: live.pan as f32,
-            tilt: live.tilt as f32 + 0.0, // no -0
-            zoom: self.zoom_factor()?.clamp(1.0, MAX_ZOOM),
-        };
+        let pose = self.live_pose_and_zoom()?;
         self.framed(&presets::hand_return_set(pose, self.seq.next())?)?;
         Ok(pose)
+    }
+
+    /// Hand tracking area in obsbot4linux's angles (as [`Camera::set_zone_area`]).
+    pub fn set_hand_area(&self, pan: (f32, f32), tilt: (f32, f32)) -> Result<()> {
+        let seqs = [0; 4].map(|_| self.seq.next());
+        for f in cmd::hand_area(pan, (-tilt.1, -tilt.0), seqs)? {
+            self.framed(&f)?;
+        }
+        Ok(())
+    }
+
+    /// Sets the hand tracking area back to the camera's default.
+    pub fn hand_area_reset(&self) -> Result<()> {
+        let seqs = [0; 4].map(|_| self.seq.next());
+        for f in cmd::hand_area_reset(seqs) {
+            self.framed(&f)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_hand_pan(&self, on: bool) -> Result<()> {
+        self.framed(&cmd::hand_pan(on, self.seq.next()))
+    }
+
+    pub fn set_hand_tilt(&self, on: bool) -> Result<()> {
+        self.framed(&cmd::hand_tilt(on, self.seq.next()))
+    }
+
+    pub fn set_hand_return_after(&self, seconds: f32) -> Result<()> {
+        self.framed(&cmd::hand_return_after(seconds, self.seq.next())?)
+    }
+
+    /// Lets the hand tracker move the gimbal or holds it (not stored by the camera).
+    pub fn set_hand_gimbal(&self, on: bool) -> Result<()> {
+        self.framed(&cmd::hand_gimbal(on, self.seq.next()))
+    }
+
+    /// Stores a zone view under the lowest free id and returns it. Without `pose` the current one
+    /// is used (live pose and zoom). Name and pose are checked before anything is sent.
+    pub fn save_zone_view(&self, name: &str, pose: Option<Pose>) -> Result<ZoneView> {
+        let pose = match pose {
+            Some(p) => p,
+            None => self.live_pose_and_zoom()?,
+        };
+        let taken: Vec<u32> = self.zone_views()?.iter().map(|v| v.id).collect();
+        let id = presets::free_view_id(&taken);
+        let add = presets::view_add(id, pose, self.seq.next())?;
+        let rename = presets::view_rename(id, name, self.seq.next())?;
+        self.framed(&add)?;
+        sleep(PAIR_GAP);
+        self.framed(&rename)?;
+        Ok(ZoneView {
+            id,
+            name: name.to_string(),
+            pose,
+        })
+    }
+
+    pub fn rename_zone_view(&self, id: u32, name: &str) -> Result<()> {
+        self.framed(&presets::view_rename(id, name, self.seq.next())?)
+    }
+
+    pub fn delete_zone_view(&self, id: u32) -> Result<()> {
+        self.framed(&presets::view_remove(id, self.seq.next()))
+    }
+
+    /// Moves the gimbal to a zone view. The remembered gimbal pose is dropped, as after a preset
+    /// recall.
+    pub fn zone_view_go(&self, id: u32) -> Result<()> {
+        self.framed(&presets::view_go(id, self.seq.next()))?;
+        State {
+            gimbal: None,
+            ..State::load()
+        }
+        .save()
     }
 
     /// Moves the gimbal to the hand-tracking return position.
@@ -1152,9 +1275,16 @@ mod full_status_tests {
                 tilt_max: 30.0,
             },
             return_pose: None,
+            pan_enabled: Some(true),
+            tilt_enabled: Some(false),
+            return_after: Some(2.5),
         };
         let v = serde_json::to_value(&h).unwrap();
         assert_eq!(v["area"]["tilt_max"], 30.0);
+        assert_eq!(
+            (&v["pan_enabled"], &v["tilt_enabled"], &v["return_after"]),
+            (&true.into(), &false.into(), &2.5.into())
+        );
         assert!(v["return"].is_null(), "no return position set");
         h.return_pose = Some(Pose {
             pan: 20.0,
@@ -1180,11 +1310,22 @@ mod full_status_tests {
                 tilt: 0.0,
                 zoom: 1.0,
             },
+            views: Some(vec![ZoneView {
+                id: 0,
+                name: "Bereich1".into(),
+                pose: Pose {
+                    pan: 0.5,
+                    tilt: 0.0,
+                    zoom: 1.5,
+                },
+            }]),
         };
+        // the keys of 0.11 keep their place and shape; `views` is the only addition
         assert_eq!(
             serde_json::to_value(z).unwrap(),
             serde_json::json!({"pan_min": -10.0, "pan_max": 10.0, "tilt_min": -5.0, "tilt_max": 5.0,
-                "follow": true, "return": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0}})
+                "follow": true, "return": {"pan": 0.0, "tilt": 0.0, "zoom": 1.0},
+                "views": [{"id": 0, "name": "Bereich1", "pose": {"pan": 0.5, "tilt": 0.0, "zoom": 1.5}}]})
         );
     }
 

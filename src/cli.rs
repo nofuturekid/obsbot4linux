@@ -41,6 +41,26 @@ pub enum HandCmd {
     ReturnGo,
     /// Clear the hand-tracking return position
     ReturnReset,
+    /// Area the hand is tracked in, in degrees. The camera's default: --pan -45 45 --tilt -30 30
+    Area {
+        /// Pan range, MIN MAX, positive = camera left (-150..150)
+        #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
+        pan: Vec<f32>,
+        /// Tilt range, MIN MAX, positive = up (-70..90)
+        #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], allow_negative_numbers = true, required = true)]
+        tilt: Vec<f32>,
+    },
+    /// Set the hand tracking area back to the camera's default
+    AreaReset,
+    /// Whether the hand tracker may pan (off: the pan axis stays where it is)
+    Pan { state: OnOff },
+    /// Whether the hand tracker may tilt (off: the tilt axis stays where it is)
+    Tilt { state: OnOff },
+    /// Seconds the hand may stay outside the area before the camera returns to the return position
+    ReturnAfter { seconds: f32 },
+    /// Whether the hand tracker may move the gimbal at all (off stops it; the camera does not
+    /// keep this setting)
+    Gimbal { state: OnOff },
 }
 
 #[derive(Subcommand)]
@@ -214,7 +234,7 @@ pub enum Cmd {
     /// Gesture control
     #[command(subcommand)]
     Gesture(GestureCmd),
-    /// Hand tracking: which hand, return position
+    /// Hand tracking: which hand, return position, area, axes
     #[command(subcommand)]
     Hand(HandCmd),
     /// Zone tracking
@@ -297,6 +317,31 @@ pub enum ZoneCmd {
     ReturnHere,
     /// Move the camera to the zone return position
     ReturnGo,
+    /// Named poses stored in the camera ("zone views"); the camera does not track by them
+    #[command(subcommand)]
+    View(ViewCmd),
+}
+
+#[derive(Subcommand)]
+pub enum ViewCmd {
+    /// List the views
+    List,
+    /// Store a view under the lowest free id; without --pan/--tilt/--zoom the current pose is used
+    Save {
+        name: String,
+        #[arg(long, allow_negative_numbers = true, requires_all = ["tilt", "zoom"])]
+        pan: Option<f32>,
+        #[arg(long, allow_negative_numbers = true, requires_all = ["pan", "zoom"])]
+        tilt: Option<f32>,
+        #[arg(long, requires_all = ["pan", "tilt"])]
+        zoom: Option<f32>,
+    },
+    /// Rename a view (printable ASCII, up to 32 characters)
+    Rename { id: u32, name: String },
+    /// Delete a view
+    Delete { id: u32 },
+    /// Move the camera to a view
+    Go { id: u32 },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -634,6 +679,24 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
             HandCmd::ReturnReset => cam
                 .hand_return_reset()
                 .and_then(|_| done("hand_return_reset", Value::Null)),
+            HandCmd::Area { pan, tilt } => cam
+                .set_hand_area((pan[0], pan[1]), (tilt[0], tilt[1]))
+                .and_then(|_| done("hand_area", json!({ "pan": pan, "tilt": tilt }))),
+            HandCmd::AreaReset => cam
+                .hand_area_reset()
+                .and_then(|_| done("hand_area_reset", Value::Null)),
+            HandCmd::Pan { state } => cam
+                .set_hand_pan(state.get())
+                .and_then(|_| done("hand_pan", json!(onoff(state.get())))),
+            HandCmd::Tilt { state } => cam
+                .set_hand_tilt(state.get())
+                .and_then(|_| done("hand_tilt", json!(onoff(state.get())))),
+            HandCmd::ReturnAfter { seconds } => cam
+                .set_hand_return_after(seconds)
+                .and_then(|_| done("hand_return_after", json!(seconds))),
+            HandCmd::Gimbal { state } => cam
+                .set_hand_gimbal(state.get())
+                .and_then(|_| done("hand_gimbal", json!(onoff(state.get())))),
         },
         Cmd::Zone(z) => match z {
             ZoneCmd::On | ZoneCmd::Off => {
@@ -653,6 +716,50 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
             ZoneCmd::ReturnGo => cam
                 .zone_return_go()
                 .and_then(|_| done("zone_return_go", Value::Null)),
+            ZoneCmd::View(v) => match v {
+                ViewCmd::List => {
+                    let list = cam.zone_views()?;
+                    let text = if list.is_empty() {
+                        "no zone views".to_string()
+                    } else {
+                        list.iter()
+                            .map(|v| {
+                                format!(
+                                    "view {}: {:?}  pan {:.2}  tilt {:.2}  zoom {:.2}",
+                                    v.id, v.name, v.pose.pan, v.pose.tilt, v.pose.zoom
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    Ok((
+                        json!({"ok": true, "command": "zone_view_list", "value": list}),
+                        text,
+                    ))
+                }
+                ViewCmd::Save {
+                    name,
+                    pan,
+                    tilt,
+                    zoom,
+                } => {
+                    let pose =
+                        pan.zip(tilt)
+                            .zip(zoom)
+                            .map(|((pan, tilt), zoom)| Pose { pan, tilt, zoom });
+                    let view = cam.save_zone_view(&name, pose)?;
+                    done("zone_view_save", json!(view))
+                }
+                ViewCmd::Rename { id, name } => cam
+                    .rename_zone_view(id, &name)
+                    .and_then(|_| done("zone_view_rename", json!({"id": id, "name": name}))),
+                ViewCmd::Delete { id } => cam
+                    .delete_zone_view(id)
+                    .and_then(|_| done("zone_view_delete", json!({"id": id}))),
+                ViewCmd::Go { id } => cam
+                    .zone_view_go(id)
+                    .and_then(|_| done("zone_view_go", json!({"id": id}))),
+            },
         },
         Cmd::Focus(f) => match f {
             FocusCmd::Mode { mode } => {

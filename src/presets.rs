@@ -9,7 +9,7 @@
 
 use crate::commands::{AiMode, gimbal_angles_ok};
 use crate::error::{Error, Result};
-use crate::frame::{FRAME_SIZE, frame};
+use crate::frame::{FRAME_SIZE, frame, query_frame_with};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,15 @@ pub struct Pose {
 pub struct Preset {
     /// Slot index 0-2.
     pub slot: u8,
+    pub name: String,
+    pub pose: Pose,
+}
+
+/// A zone view: a named pose stored in the camera (`REGION_VIEW`, the "areas" of the zone dialog
+/// in OBSBOT Center). The camera does not track by them; they are poses to go to.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ZoneView {
+    pub id: u32,
     pub name: String,
     pub pose: Pose,
 }
@@ -83,20 +92,77 @@ pub fn update(slot: u8, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
     pose_frame(0x3e04, slot, pose, seq)
 }
 
-/// Rename: plain ASCII, no terminator.
-pub fn rename(slot: u8, name: &str, seq: u16) -> Result<[u8; FRAME_SIZE]> {
-    check_slot(slot)?;
+fn check_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > MAX_NAME
         || !name.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
     {
         return Err(Error::Invalid(format!(
-            "preset name must be 1-{MAX_NAME} printable ASCII characters"
+            "name must be 1-{MAX_NAME} printable ASCII characters"
         )));
     }
-    let mut data = (slot as u32).to_le_bytes().to_vec();
+    Ok(())
+}
+
+/// Rename: plain ASCII, no terminator.
+pub fn rename(slot: u8, name: &str, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    check_slot(slot)?;
+    named(0x3a84, slot as u32, name, seq)
+}
+
+fn named(command: u16, id: u32, name: &str, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    check_name(name)?;
+    let mut data = id.to_le_bytes().to_vec();
     data.extend_from_slice(name.as_bytes());
-    Ok(frame(RECEIVER, 0x3a84, &data, seq))
+    Ok(frame(RECEIVER, command, &data, seq))
+}
+
+/// Adds a zone view (`0x1384`): the preset layout with the view id, last value -1000 as OBSBOT
+/// Center sends it. The name goes in a second frame, [`view_rename`].
+pub fn view_add(id: u32, pose: Pose, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    let data = pose_data(id, pose, -1000.0, "zone view pose")?;
+    Ok(frame(RECEIVER, 0x1384, &data, seq))
+}
+
+/// Names a zone view (`0x1544`): id, then plain ASCII like [`rename`].
+pub fn view_rename(id: u32, name: &str, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    named(0x1544, id, name, seq)
+}
+
+pub fn view_remove(id: u32, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(RECEIVER, 0x13c4, &id.to_le_bytes(), seq)
+}
+
+/// Moves the gimbal to a zone view (`0x1604`, id only). The id is outside the ranges that arm the
+/// zone Static flag (README), unlike a preset recall.
+pub fn view_go(id: u32, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(RECEIVER, 0x1604, &id.to_le_bytes(), seq)
+}
+
+/// A query for one view: `0x1504` (name) or `0x1444` (pose), request = the id.
+pub fn view_query(command: u16, id: u32, seq: u16) -> [u8; FRAME_SIZE] {
+    query_frame_with(RECEIVER, command, &id.to_le_bytes(), seq)
+}
+
+/// The ids in the answer to `0x1344`: one `u32` each, none when the camera has no view.
+pub fn parse_view_ids(data: &[u8]) -> Vec<u32> {
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect()
+}
+
+/// The name in the answer to `0x1504`: plain ASCII, no terminator.
+pub fn parse_view_name(data: &[u8]) -> String {
+    String::from_utf8_lossy(data)
+        .trim_end_matches('\0')
+        .to_string()
+}
+
+/// The lowest id not taken. OBSBOT Center used 0-2; the firmware keeps no limit.
+pub fn free_view_id(taken: &[u32]) -> u32 {
+    (0..).find(|id| !taken.contains(id)).unwrap_or(0)
 }
 
 /// Delete is two frames, the delete and the cleared picture settings, about 100 ms apart.
@@ -409,6 +475,65 @@ mod tests {
     }
 
     #[test]
+    fn zone_view_frames_match_capture() {
+        // OBSBOT Center, capture 11: view 0 at pan 0.2, tilt 0, zoom 1.48, named "Bereich1"
+        let pose = Pose {
+            pan: f32::from_bits(0x3e4ccccd),
+            tilt: 0.0,
+            zoom: f32::from_bits(0x3fbd70a3),
+        };
+        assert_captured(
+            view_add(0, pose, 426).unwrap(),
+            "aa25aa010c00f19b0a0484131800cd0200000000cdcc4c3e0000000000000000a370bd3f00007ac4",
+        );
+        assert_captured(
+            view_rename(0, "Bereich1", 427).unwrap(),
+            "aa25ab010c00705c0a0444150c00b1a9000000004265726569636831",
+        );
+        assert_captured(
+            view_remove(1, 428),
+            "aa25ac010c0020440a04c4130400bffb01000000",
+        );
+        assert_captured(
+            view_query(0x1444, 0, 451),
+            "aa21c3010c0026f80a0444140400be0700000000",
+        );
+        // 0x1604 was never captured: the same one-word body as 0x13c4, only the id differs
+        let go = view_go(2, 5);
+        assert_eq!(
+            (go[10..12].to_vec(), go[16..20].to_vec()),
+            (vec![0x04, 0x16], vec![2, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn zone_view_readbacks_decode_as_captured() {
+        // capture 11 (one view stored): list, name and pose answers
+        assert_eq!(parse_view_ids(&hex::decode("00000000").unwrap()), vec![0]);
+        assert_eq!(parse_view_ids(&[]), Vec::<u32>::new(), "no view stored");
+        assert_eq!(parse_view_name(b"Bereich1"), "Bereich1");
+        let (id, p) =
+            parse_pose(&hex::decode("00000000cdcc4c3e0000000000000000a370bd3f00000000").unwrap())
+                .unwrap();
+        assert_eq!((id, p.pan, p.tilt), (0, 0.2f32, 0.0));
+        assert_eq!(p.zoom.to_bits(), 0x3fbd70a3);
+    }
+
+    #[test]
+    fn a_new_view_takes_the_lowest_free_id() {
+        assert_eq!(free_view_id(&[]), 0);
+        assert_eq!(free_view_id(&[0, 1, 3]), 2, "a deleted id is reused");
+    }
+
+    #[test]
+    fn zone_view_names_follow_the_preset_name_rules() {
+        assert!(view_rename(0, "", 0).is_err());
+        assert!(view_rename(0, &"x".repeat(MAX_NAME + 1), 0).is_err());
+        assert!(view_rename(0, "Büro", 0).is_err());
+        assert!(view_rename(0, &"x".repeat(MAX_NAME), 0).is_ok());
+    }
+
+    #[test]
     fn rename_matches_capture() {
         assert_captured(
             rename(0, "Voreingestellt1", 266).unwrap(),
@@ -483,6 +608,19 @@ mod tests {
                 .unwrap();
         assert_eq!(lead, u32::MAX);
         assert_eq!((p.pan, p.tilt, p.zoom), (0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn zone_return_lead_is_the_id_not_a_not_set_marker() {
+        // 0x4ec4 on a fresh camera (captures 11 and 18 after a factory reset) and after a return
+        // position was set: the lead is 0 both times, only the pose differs. So `zone.return` has
+        // no "not set" and stays a pose (#57); the hand return (0x2504) is the one with -1.
+        let fresh = "000000000000000000000000000000000000803f00000000";
+        let set = "000000000000a0410000a0c0000000000000803f00000000";
+        for reply in [fresh, set] {
+            let (lead, _) = parse_pose(&hex::decode(reply).unwrap()).unwrap();
+            assert_eq!(lead, 0, "{reply}");
+        }
     }
 
     #[test]

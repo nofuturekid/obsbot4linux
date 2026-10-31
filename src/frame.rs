@@ -46,11 +46,28 @@ fn header(kind: u8, receiver: u8, command: u16, sequence: u16) -> [u8; FRAME_SIZ
 /// # Panics
 /// If `data` is longer than [`MAX_DATA`].
 pub fn frame(receiver: u8, command: u16, data: &[u8], sequence: u16) -> [u8; FRAME_SIZE] {
+    with_data(0x25, receiver, command, data, sequence)
+}
+
+/// Builds a query frame that carries a request (type 0x21), e.g. the id of the view to read.
+///
+/// # Panics
+/// If `data` is longer than [`MAX_DATA`].
+pub fn query_frame_with(
+    receiver: u8,
+    command: u16,
+    data: &[u8],
+    sequence: u16,
+) -> [u8; FRAME_SIZE] {
+    with_data(0x21, receiver, command, data, sequence)
+}
+
+fn with_data(kind: u8, receiver: u8, command: u16, data: &[u8], sequence: u16) -> [u8; FRAME_SIZE] {
     assert!(
         data.len() <= MAX_DATA,
         "frame data must not exceed {MAX_DATA} bytes"
     );
-    let mut b = header(0x25, receiver, command, sequence);
+    let mut b = header(kind, receiver, command, sequence);
     let end = DATA_OFFSET + data.len();
     b[12..14].copy_from_slice(&(data.len() as u16).to_le_bytes());
     b[DATA_OFFSET..end].copy_from_slice(data);
@@ -71,6 +88,9 @@ pub enum Answer<'a> {
     Value(&'a [u8]),
     /// Type 0x89: rejected, with the signed error code from the header extension.
     Rejected(i16),
+    /// Type 0x09: an answer with no data section, which is how the camera says "nothing to list"
+    /// (`0x1344` with no zone view stored, captures 11 and 18).
+    Empty,
 }
 
 /// The error code of a rejected answer. Those frames have a 16-byte header (bytes 4..6) whose
@@ -95,6 +115,7 @@ pub fn parse_answer(reply: &[u8], sequence: u16) -> Option<Answer<'_>> {
     match reply[1] {
         0x29 => Some(Answer::Value(data)),
         0x89 => Some(Answer::Rejected(error_code(reply))),
+        0x09 => Some(Answer::Empty),
         _ => None,
     }
 }
@@ -168,6 +189,32 @@ mod tests {
         let q = query_frame(0x04, 0x0104, 7);
         assert_eq!(q[..captured.len()], captured[..]);
         assert!(q[captured.len()..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn query_with_request_matches_capture() {
+        // 0x1504 (name of zone view 0) from OBSBOT Center (capture 11, seq 450): type 0x21
+        let captured = hex::decode("aa21c2010c00873d0a0404150400be0700000000").unwrap();
+        let q = query_frame_with(0x04, 0x1504, &0u32.to_le_bytes(), 450);
+        assert_eq!(q[..captured.len()], captured[..]);
+        assert!(q[captured.len()..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn answer_without_data_section_is_empty_not_missing() {
+        // Reply to the zone view list (0x1344, capture 11 seq 374) while no view is stored: type
+        // 0x09, a 12-byte header and no data section; the bytes after the header are leftovers of
+        // the previous read. It used to count as "no answer" and ran into the poll timeout.
+        let mut r = [0u8; 60];
+        let captured = hex::decode(concat!(
+            "aa0976010c0092b6040a4413",
+            "04006856",
+            "0000c8c20101"
+        ))
+        .unwrap();
+        r[..captured.len()].copy_from_slice(&captured);
+        assert_eq!(parse_answer(&r, 374), Some(Answer::Empty));
+        assert_eq!(parse_answer(&r, 375), None);
     }
 
     fn answer(kind: u8, seq: u16, data: &[u8]) -> [u8; 60] {

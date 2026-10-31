@@ -188,7 +188,8 @@ positive = camera left, tilt positive = up.
     "tilt_min": -5.0,
     "tilt_max": 5.0,
     "follow": true,
-    "return": { "pan": 0.0, "tilt": 0.0, "zoom": 1.0 }
+    "return": { "pan": 0.0, "tilt": 0.0, "zoom": 1.0 },
+    "views": [{ "id": 0, "name": "Bereich1", "pose": { "pan": 0.2, "tilt": 0.0, "zoom": 1.5 } }]
   },
   "state": {
     "zone_follow": true,
@@ -204,6 +205,9 @@ of the initial state (see below), `null` when none is set.
 
 - `zone return-here` stores the current pose (queries `0x0043` and `0x6804`) as the position the
   zone tracking returns to; `zone return-go` moves the camera there.
+- `zone return` is always a pose, never `null`: the camera has no "not set" for it. The leading
+  word of the `0x4ec4` answer is the preset id (0), and a fresh camera answers pan 0, tilt 0,
+  zoom 1.0, so that cannot be told from a return position set to the same pose (#57).
 - `startup show` prints the start pose (query `0x3884`) and the picture settings of the initial
   state (`0x3e84`); a setting the initial state does not set is `null`. `ai_mode` is the first byte
   of that block.
@@ -219,6 +223,20 @@ of the initial state (see below), `null` when none is set.
   are not verified. `startup set` with a pose still clears the other picture settings of the
   initial state.
 
+Zone views are named poses stored in the camera, the "areas" of OBSBOT Center's zone dialog. The
+camera does not track by them (static analysis: the tracking code never reads them); they are
+poses to go to, like presets with a name and no fixed number of slots. `zone.views` in the status
+lists them (`null` when the camera did not answer; queries `0x1344`, then `0x1504` and `0x1444`
+for each id). Capability: `zone_views`.
+
+| Command | Does |
+| --- | --- |
+| `zone view list` | lists the views |
+| `zone view save <name> [--pan P --tilt T --zoom Z]` | stores a view under the lowest free id (`0x1384`, then the name with `0x1544`); without a pose the current one is used (`0x0043` and `0x6804`). Name: 1-32 printable ASCII characters |
+| `zone view rename <id> <name>` | renames a view (`0x1544`) |
+| `zone view delete <id>` | deletes a view (`0x13c4`) |
+| `zone view go <id>` | moves the camera to the view (`0x1604`). Not tested on the camera yet: whether the tracking mode stays, and whether it changes the next zone return, are open (see below) |
+
 The daemon reads these seven values at start, after each command and then once a minute, not with
 every poll. Capability: `zone_return`.
 
@@ -232,9 +250,9 @@ query `0x6604` (#67), and `startup go` uses the short command `00`, not the fram
 ### Hand tracking return position
 
 The camera has its own return position for hand tracking, where the gimbal goes once the hand has
-left the tracking range. It and the hand area are read from the camera (queries `0x2504` and
-`0x2004`) and appear next to `zone`, in the same angles (pan positive = camera left, tilt
-positive = up):
+left the tracking range. It, the hand area and the axis settings are read from the camera (queries
+`0x2504`, `0x2004` and `0x2484`) and appear next to `zone`, in the same angles (pan positive =
+camera left, tilt positive = up):
 
 ```json
 {
@@ -245,20 +263,38 @@ positive = up):
       "tilt_min": -30.0,
       "tilt_max": 30.0
     },
-    "return": { "pan": 20.1, "tilt": 4.9, "zoom": 1.0 }
+    "return": { "pan": 20.1, "tilt": 4.9, "zoom": 1.0 },
+    "pan_enabled": true,
+    "tilt_enabled": true,
+    "return_after": 2.0
   }
 }
 ```
 
-`return` is `null` while none is set, and `hand` is `null` when the camera does not answer. The
-area is only read; obsbot4linux has no command to change it (the camera's default is 45 degrees to
-each side and 30 up and down).
+`return` is `null` while none is set, and `hand` is `null` when the camera does not answer.
+`pan_enabled` and `tilt_enabled` are bytes 22 and 23 of the `0x2004` answer (1 / 1 in the
+captures); `return_after` comes from `0x2484` and is `null` if the camera does not answer it (that
+query was not captured). The camera's default area is 45 degrees to each side and 30 up and down.
 
 - `hand return-here` stores the current pose (queries `0x0043` and `0x6804`) with `0x24c4`.
 - `hand return-go` moves the camera to the stored position (`0x2584`). With none set, the camera
   goes to pan 0, tilt 0.
 - `hand return-reset` clears it (`0x2544`); `return` is `null` again.
 - `hand left` and `hand right` choose the tracked hand as before.
+- `hand area --pan MIN MAX --tilt MIN MAX` sets the area the hand is tracked in (`0x2044`,
+  `0x20c4`, `0x2144`, `0x21c4`, the same ranges as `zone area`); `hand area-reset` sets all four
+  bounds back to the default (`0x25c4`, `0x2604`, `0x2644`, `0x2684`). Capability: `hand_area`.
+- `hand pan on|off` and `hand tilt on|off` let the hand tracker move only one axis (`0x2344`,
+  `0x23c4`). Capability: `hand_axes`.
+- `hand return-after <seconds>` sets how long the hand may be outside the area before the camera
+  goes to the return position (`0x2444`). Capability: `hand_return_after`.
+- `hand gimbal on|off` lets the hand tracker move the gimbal or holds it (`0x26c4`; off also
+  stops the gimbal; the camera does not store it, OBSBOT Center sends 0 while its area dialog is
+  open and 1 on OK). Switch it back on. Capability: `hand_gimbal`.
+
+The area, axis and return-time commands come from the firmware inventory and the Center capture of
+the hand settings dialog; whether the hand AI mode (`16 03`) or a later mode change overwrites them
+is not known yet.
 
 The daemon reads the two values together with the zone values (see above). Capability:
 `hand_return`.
@@ -345,7 +381,11 @@ the command id alone, for the ranges `0x39c0`-`0x39ff`, `0x3dc0`-`0x3dff`, `0x66
 `0x3900`-`0x393f` (static analysis of the camera's host process). None of the commands in this
 section is in them (`0x0544`, `0x0944`, `0x0a44`, `0x0ac4`, `0x0b44`, `0x0bc4`, `0x0c44`, `0x1584`,
 `0x6484`, `0x6544`, `0x6704`, `0x6884`, `0x68c4`, nor the read-back queries); a zone tracking return
-after them was not run on the camera.
+after them was not run on the camera. The zone view commands (`0x1344`, `0x1384`, `0x13c4`, `0x1444`,
+`0x1504`, `0x1544`, `0x1604`) and the hand commands (`0x2044`-`0x21c4`, `0x2344`-`0x2484`,
+`0x25c4`-`0x2684`, `0x26c4`) are outside the ranges too, which a unit test checks; `zone view go`
+is the one that matters, since it moves the gimbal like a preset recall does. Whether the camera
+treats it like one inside is not known; a zone return after it is still to be run.
 
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist

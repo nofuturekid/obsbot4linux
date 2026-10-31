@@ -4,7 +4,7 @@
 //! every client are serialised and sequence numbers stay unique), executes requests with the
 //! CLI's own argument parser and polls the camera to notice changes it makes itself.
 
-use crate::cli::{Cli, Cmd, GimbalCmd, PresetCmd, ZoomCmd, execute_with};
+use crate::cli::{Cli, Cmd, GimbalCmd, PresetCmd, ViewCmd, ZoneCmd, ZoomCmd, execute_with};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
 use nix::errno::Errno;
@@ -53,7 +53,10 @@ fn parse_request(args: &[String]) -> std::result::Result<Cmd, String> {
 
 /// Commands that only read: they neither drop the zone cache nor cause a re-read and an event.
 fn read_only(cmd: &Cmd) -> bool {
-    matches!(cmd, Cmd::Status | Cmd::Preset(PresetCmd::List))
+    matches!(
+        cmd,
+        Cmd::Status | Cmd::Preset(PresetCmd::List) | Cmd::Zone(ZoneCmd::View(ViewCmd::List))
+    )
 }
 
 /// Stops change no setting: the zone readbacks stay, so a stop is not queued behind a long full
@@ -601,6 +604,8 @@ mod tests {
             "preset list",
             "--json preset list",
             "preset --json list",
+            "zone view list",
+            "--json zone view list",
         ] {
             assert!(read_only(&parsed(line)), "{line}");
         }
@@ -608,6 +613,9 @@ mod tests {
             "led 2",
             "--json led 2",
             "preset recall 1",
+            "zone view go 0",
+            "zone view save a",
+            "hand pan off",
             "--json gimbal --pan 3",
             "gimbal stop",
             "gimbal center 0.3 0.4",
