@@ -105,8 +105,11 @@ fn error_code(reply: &[u8]) -> i16 {
     }
 }
 
-/// Parses a selector-2 read; None when it is not the answer to `sequence` (yet).
-pub fn parse_answer(reply: &[u8], sequence: u16) -> Option<Answer<'_>> {
+/// Parses a selector-2 read; None when it is not the answer to `sequence` (yet). Answers are
+/// matched by sequence; an empty answer (type 0x09) must also echo `command`, since it carries no
+/// data to tell it from a stale reply of another query (a wrong "empty" would make
+/// `zone view save` pick id 0 again).
+pub fn parse_answer(reply: &[u8], sequence: u16, command: u16) -> Option<Answer<'_>> {
     if reply.len() < DATA_OFFSET || reply[0] != 0xaa || reply[2..4] != sequence.to_le_bytes() {
         return None;
     }
@@ -115,7 +118,7 @@ pub fn parse_answer(reply: &[u8], sequence: u16) -> Option<Answer<'_>> {
     match reply[1] {
         0x29 => Some(Answer::Value(data)),
         0x89 => Some(Answer::Rejected(error_code(reply))),
-        0x09 => Some(Answer::Empty),
+        0x09 if reply[10..12] == command.to_le_bytes() => Some(Answer::Empty),
         _ => None,
     }
 }
@@ -213,8 +216,10 @@ mod tests {
         ))
         .unwrap();
         r[..captured.len()].copy_from_slice(&captured);
-        assert_eq!(parse_answer(&r, 374), Some(Answer::Empty));
-        assert_eq!(parse_answer(&r, 375), None);
+        assert_eq!(parse_answer(&r, 374, 0x1344), Some(Answer::Empty));
+        assert_eq!(parse_answer(&r, 375, 0x1344), None);
+        // same sequence, but the reply is for another query: not an answer to this one
+        assert_eq!(parse_answer(&r, 374, 0x1444), None);
     }
 
     fn answer(kind: u8, seq: u16, data: &[u8]) -> [u8; 60] {
@@ -230,9 +235,9 @@ mod tests {
     #[test]
     fn answer_is_matched_by_sequence_only() {
         let r = answer(0x29, 7, &[1, 2, 3]);
-        assert_eq!(parse_answer(&r, 7), Some(Answer::Value(&[1, 2, 3])));
-        assert_eq!(parse_answer(&r, 8), None, "other sequence");
-        assert_eq!(parse_answer(&[0u8; 60], 7), None, "not a frame");
+        assert_eq!(parse_answer(&r, 7, 0), Some(Answer::Value(&[1, 2, 3])));
+        assert_eq!(parse_answer(&r, 8, 0), None, "other sequence");
+        assert_eq!(parse_answer(&[0u8; 60], 7, 0), None, "not a frame");
     }
 
     #[test]
@@ -243,14 +248,14 @@ mod tests {
         let mut r = [0u8; 60];
         let captured = hex::decode("aa890400100046b7020a42c40002fdff0000803f01010014").unwrap();
         r[..captured.len()].copy_from_slice(&captured);
-        assert_eq!(parse_answer(&r, 4), Some(Answer::Rejected(-3)));
+        assert_eq!(parse_answer(&r, 4, 0), Some(Answer::Rejected(-3)));
     }
 
     #[test]
     fn rejected_answer_without_extension_has_no_code() {
         // 12-byte header: nothing to read, and the data section of an error is ignored
         let r = answer(0x89, 7, &[0x0a, 0x00]);
-        assert_eq!(parse_answer(&r, 7), Some(Answer::Rejected(0)));
+        assert_eq!(parse_answer(&r, 7, 0), Some(Answer::Rejected(0)));
     }
 
     #[test]

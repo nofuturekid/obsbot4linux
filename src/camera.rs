@@ -382,7 +382,7 @@ impl Camera {
             sleep(REPLY_GAP);
             // a read before the answer is ready can fail; just poll again
             if let Ok(reply) = self.dev.xu_get(2) {
-                match parse_answer(&reply, seq) {
+                match parse_answer(&reply, seq, command) {
                     Some(Answer::Value(data)) => return Ok(data.to_vec()),
                     Some(Answer::Empty) => return Ok(Vec::new()),
                     Some(Answer::Rejected(code)) => return Err(Error::Rejected(command, code)),

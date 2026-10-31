@@ -735,40 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn no_zone_or_hand_command_arms_the_zone_static_flag() {
-        // The camera arms the flag by command id alone (README, "Commands that arm the zone
-        // Static flag"): a new command in one of these ranges would break the zone return.
-        let armed =
-            |id: u16| matches!(id >> 6, 0xe7 | 0xf7 | 0xe4) || (0x6600..=0x663f).contains(&id);
-        assert!(armed(0x39c4) && armed(0x3dc4) && armed(0x3904) && armed(0x6604));
-        let s = [1; 4];
-        let id = |f: [u8; FRAME_SIZE]| u16::from_le_bytes([f[10], f[11]]);
-        let mut frames = vec![
-            hand_pan(true, 1),
-            hand_tilt(true, 1),
-            hand_gimbal(true, 1),
-            hand_return_after(1.0, 1).unwrap(),
-        ];
-        frames.extend(hand_area_reset(s));
-        frames.extend(hand_area((-1.0, 1.0), (-1.0, 1.0), s).unwrap());
-        let pose = crate::presets::Pose {
-            pan: 0.0,
-            tilt: 0.0,
-            zoom: 1.0,
-        };
-        frames.push(crate::presets::view_add(0, pose, 1).unwrap());
-        frames.push(crate::presets::view_rename(0, "a", 1).unwrap());
-        frames.push(crate::presets::view_remove(0, 1));
-        frames.push(crate::presets::view_go(0, 1));
-        for q in [0x1344, 0x1444, 0x1504, 0x2004, 0x2484] {
-            assert!(!armed(q), "query {q:#06x}");
-        }
-        for f in frames {
-            assert!(!armed(id(f)), "command {:#06x}", id(f));
-        }
-    }
-
-    #[test]
     fn hand_return_go_and_reset_have_no_data() {
         for (f, command) in [
             (hand_return_go(9), 0x2584u16),

@@ -134,7 +134,11 @@ pub fn view_remove(id: u32, seq: u16) -> [u8; FRAME_SIZE] {
 }
 
 /// Moves the gimbal to a zone view (`0x1604`, id only). The id is outside the ranges that arm the
-/// zone Static flag (README), unlike a preset recall.
+/// zone Static flag (README), so it does not arm it. But the camera runs it through the same
+/// preset move as a recall (`trigger_untracked_view`, inferred from the firmware code, not tried
+/// yet): on arrival that CONSUMES a flag a recall or `0x6604` armed earlier, which switches the
+/// camera to Static, and tracking restarts afterwards only if the view's actions name an AI mode
+/// (they default to "not set"), so tracking may stay suspended, as after `startup go`.
 pub fn view_go(id: u32, seq: u16) -> [u8; FRAME_SIZE] {
     frame(RECEIVER, 0x1604, &id.to_le_bytes(), seq)
 }
