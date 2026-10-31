@@ -7,7 +7,7 @@
 //! degrees positive up. The camera's preset format has tilt positive down, so the sign is
 //! flipped when writing and reading.
 
-use crate::commands::gimbal_angles_ok;
+use crate::commands::{TrackingSpeed, gimbal_angles_ok};
 use crate::error::{Error, Result};
 use crate::frame::{FRAME_SIZE, frame};
 use serde::{Deserialize, Serialize};
@@ -166,6 +166,41 @@ pub fn startup_picture_settings(seq: u16) -> [u8; FRAME_SIZE] {
     frame(RECEIVER, 0x3e44, &data, seq)
 }
 
+/// The picture settings of the initial state, from the 40-byte answer to `0x3e84` (the layout of
+/// `0x3e44`). A group the initial state does not set is `None`: its first byte is `0xff`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StartupActions {
+    pub tracking_speed: Option<TrackingSpeed>,
+    pub autofocus: Option<bool>,
+    pub auto_exposure: Option<bool>,
+    /// Manual white balance in Kelvin.
+    pub white_balance_kelvin: Option<u16>,
+    pub contrast: Option<u8>,
+    pub saturation: Option<u8>,
+    pub sharpness: Option<u8>,
+    pub hue: Option<u8>,
+}
+
+impl StartupActions {
+    pub fn decode(d: &[u8]) -> Option<Self> {
+        if d.len() < 24 {
+            return None;
+        }
+        let flag = |i: usize| (d[i] != 0xff).then_some(d[i] == 1);
+        let level = |i: usize| (d[i] <= 100).then_some(d[i]);
+        Some(Self {
+            tracking_speed: TrackingSpeed::from_u8(d[1]),
+            autofocus: flag(2),
+            auto_exposure: flag(6),
+            white_balance_kelvin: (d[13] == 5).then(|| u16::from_le_bytes([d[14], d[15]])),
+            contrast: level(20),
+            saturation: level(21),
+            sharpness: level(22),
+            hue: level(23),
+        })
+    }
+}
+
 /// Occupied slots from a selector-0x0c read: count, then the slot indices.
 pub fn parse_slots(block: &[u8]) -> Vec<u8> {
     let count = block.first().copied().unwrap_or(0) as usize;
@@ -236,6 +271,43 @@ mod tests {
 
     // Frames from OBSBOT Center (capture 10). Preset tilt is positive down, so the
     // captured tilt -0.1 is user tilt +0.1.
+    #[test]
+    fn startup_actions_nothing_set_as_read_live() {
+        // `0x3e84` on a camera whose initial state sets nothing (firmware 6.2.8.1): the same
+        // bytes `startup_picture_settings` writes. Every group is "not set", not zero/off.
+        let d = hex::decode(
+            "feffffffffffffff80ffffffffffffff00000000ffffffff00000000000000000000000000000000",
+        )
+        .unwrap();
+        let a = StartupActions::decode(&d).unwrap();
+        assert_eq!(a.tracking_speed, None);
+        assert_eq!(a.autofocus, None);
+        assert_eq!(a.auto_exposure, None);
+        assert_eq!(a.white_balance_kelvin, None);
+        assert_eq!(a.contrast, None);
+    }
+
+    #[test]
+    fn startup_actions_set_groups() {
+        // Layout from capture 08b: contrast 60 is 0x3c, manual white balance is 05 then Kelvin
+        // (`d8 0e` = 3800), autofocus and exposure 01 when set. Built by hand, not read back.
+        let mut d = [0xffu8; 40];
+        d[1] = 2;
+        d[2] = 1;
+        d[6] = 0;
+        d[13] = 5;
+        d[14..16].copy_from_slice(&[0xd8, 0x0e]);
+        d[20] = 60;
+        let a = StartupActions::decode(&d).unwrap();
+        assert_eq!(a.tracking_speed, Some(TrackingSpeed::Sport));
+        assert_eq!(a.autofocus, Some(true));
+        assert_eq!(a.auto_exposure, Some(false));
+        assert_eq!(a.white_balance_kelvin, Some(3800));
+        assert_eq!(a.contrast, Some(60));
+        assert_eq!(a.saturation, None, "0xff is not set, not 255");
+        assert_eq!(StartupActions::decode(&d[..23]), None);
+    }
+
     #[test]
     fn create_and_update_match_capture() {
         let pose = Pose {

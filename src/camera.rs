@@ -7,9 +7,9 @@ use crate::commands::{self as cmd, *};
 use crate::device::{CtrlRange, Device};
 use crate::error::{Error, Result};
 use crate::frame::{Answer, Sequence, parse_answer, query_frame};
-use crate::presets::{self, MAX_ZOOM, Pose, Preset};
+use crate::presets::{self, MAX_ZOOM, Pose, Preset, StartupActions};
 use crate::state::{Startup, State};
-use crate::status::{Status, Target, Tracking};
+use crate::status::{ModelInfo, Status, Target, Tracking, firmware_version};
 use crate::streaming;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -130,6 +130,10 @@ pub struct FullStatus {
     pub streaming_apps: Vec<String>,
     /// Always true here; the daemon reports false when the camera is gone.
     pub available: bool,
+    /// Firmware version such as "6.2.8.1" (query 0x0408); null when the camera did not answer.
+    pub firmware: Option<String>,
+    /// Product and platform codes (query 0x1948); null when the camera did not answer.
+    pub model_info: Option<ModelInfo>,
     pub status: Status,
     /// None when the camera did not answer query 0x0104.
     pub tracking: Option<Tracking>,
@@ -216,6 +220,13 @@ pub struct ZoneInfo {
     pub zone: Option<Zone>,
     pub hand: Option<Hand>,
     pub startup: Option<Startup>,
+}
+
+/// What does not change while the camera stays connected; the daemon reads it once per connect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Identity {
+    pub firmware: Option<String>,
+    pub model_info: Option<ModelInfo>,
 }
 
 /// One sequence for the whole process, so frames from separate `Camera` handles (the daemon
@@ -392,6 +403,26 @@ impl Camera {
         })
     }
 
+    /// Query `0x3e84`: the picture settings of the initial state.
+    pub fn startup_actions(&self) -> Result<StartupActions> {
+        StartupActions::decode(&self.query(0x3e84)?).ok_or(Error::NoAnswer(0x3e84))
+    }
+
+    /// Queries 0x0408 and 0x1948 to receiver 0x0d (the camera's upgrade process, which answers
+    /// them as OBSBOT Center asks at startup). Not 0x1ac8 there: Center names it a shell command.
+    pub fn identity(&self) -> Identity {
+        Identity {
+            firmware: self
+                .query_to(0x0d, 0x0408)
+                .ok()
+                .and_then(|d| firmware_version(&d)),
+            model_info: self
+                .query_to(0x0d, 0x1948)
+                .ok()
+                .and_then(|d| ModelInfo::decode(&d)),
+        }
+    }
+
     pub fn zone_info(&self) -> ZoneInfo {
         ZoneInfo {
             zone: self.zone().ok(),
@@ -401,11 +432,16 @@ impl Camera {
     }
 
     pub fn full_status(&self) -> Result<FullStatus> {
-        self.full_status_with(None)
+        self.full_status_with(None, None)
     }
 
-    /// Like [`Camera::full_status`], with the zone readbacks given instead of asked for again.
-    pub fn full_status_with(&self, known: Option<ZoneInfo>) -> Result<FullStatus> {
+    /// Like [`Camera::full_status`], with the zone readbacks and the identity given instead of
+    /// asked for again.
+    pub fn full_status_with(
+        &self,
+        known: Option<ZoneInfo>,
+        identity: Option<Identity>,
+    ) -> Result<FullStatus> {
         let status = self.status()?;
         let tracking = match self.tracking() {
             Ok(t) => Some(t),
@@ -426,12 +462,18 @@ impl Camera {
             hand,
             startup,
         } = known.unwrap_or_else(|| self.zone_info());
+        let Identity {
+            firmware,
+            model_info,
+        } = identity.unwrap_or_else(|| self.identity());
         Ok(FullStatus {
             model: Some(detected.model.name),
             device: Some(detected.device.to_string_lossy().into_owned()),
             streaming: streaming::is_streaming(&detected.device),
             streaming_apps,
             available: true,
+            firmware,
+            model_info,
             status,
             tracking,
             zoom: Zoom { factor, absolute },
@@ -865,6 +907,11 @@ mod full_status_tests {
             streaming: true,
             streaming_apps: vec!["ffmpeg".into()],
             available: true,
+            firmware: Some("6.2.8.1".into()),
+            model_info: Some(ModelInfo {
+                product: 8,
+                platform: 8,
+            }),
             status: Status::decode(&[0; 60]),
             tracking: None,
             zoom: Zoom {
@@ -890,6 +937,11 @@ mod full_status_tests {
         assert_eq!(v["streaming"], true);
         assert_eq!(v["streaming_apps"], serde_json::json!(["ffmpeg"]));
         assert!(v["target"].is_null());
+        assert_eq!(v["firmware"], "6.2.8.1");
+        assert_eq!(
+            v["model_info"],
+            serde_json::json!({"product": 8, "platform": 8})
+        );
         // zone_follow stays under state, next to the remembered values
         assert_eq!(v["state"]["zone_follow"], true);
         assert!(v["state"]["startup"].is_null() && v["zone"].is_null() && v["hand"].is_null());

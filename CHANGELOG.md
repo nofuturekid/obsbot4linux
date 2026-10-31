@@ -5,6 +5,20 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `firmware` (e.g. `6.2.8.1`, query `0x0408`) and `model_info` (`product`, `platform`, query
+  `0x1948`) in `status` and the state events, read once per connect; `obsbot4linux status`
+  prints the firmware. The serial number and UUID are not read (#63).
+- `startup show` prints the start pose (`0x3884`) and the picture settings of the initial state
+  (`0x3e84`) (#89).
+- `status` shows `wake_up_zoom_percent`, `sleep_images` and `default_work_mode` (#82).
+
+### Changed
+
+- `status.anti_flicker` is a name now (`off`, `50hz`, `60hz`, `auto`) instead of the V4L2
+  number; the camera can report automatic detection, which was passed on as a bare 3 (#82).
+
 ### Fixed
 
 - `startup go` no longer turns the next zone tracking return into Static. It sends the short

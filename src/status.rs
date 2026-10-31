@@ -34,6 +34,39 @@ impl FovReading {
     }
 }
 
+/// Anti-flicker as the camera reports it (V4L2 power_line_frequency).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum AntiFlicker {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "50hz")]
+    Hz50,
+    #[serde(rename = "60hz")]
+    Hz60,
+    /// The camera detects the mains frequency itself.
+    #[serde(rename = "auto")]
+    Auto,
+}
+
+impl AntiFlicker {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Off),
+            1 => Some(Self::Hz50),
+            2 => Some(Self::Hz60),
+            3 => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// The work mode the camera starts in (status byte 0x20: main << 4 | sub).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct WorkMode {
+    pub main: u8,
+    pub sub: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Status {
     pub asleep: bool,
@@ -55,9 +88,14 @@ pub struct Status {
     pub auto_gain: bool,
     pub pickup_distance: Option<PickupDistance>,
     pub gesture_target_lock: bool,
-    /// V4L2 power_line_frequency: 0 off, 1 50 Hz, 2 60 Hz.
-    pub anti_flicker: u8,
+    /// None for a value the camera is not known to report.
+    pub anti_flicker: Option<AntiFlicker>,
     pub digital_zoom_percent: u8,
+    /// Zoom after waking up, 0-100 like `digital_zoom_percent`: the factor is 1 + 3 * value / 100.
+    pub wake_up_zoom_percent: u16,
+    /// Indices (0-3) of the uploaded sleep images (`mask0..3.jpg`), from the bitmask at 0x1a.
+    pub sleep_images: Vec<u8>,
+    pub default_work_mode: WorkMode,
     pub face_auto_exposure: bool,
     pub autofocus_face: bool,
     pub continuous_autofocus: bool,
@@ -85,8 +123,14 @@ impl Status {
             auto_gain: b[0x19] != 0,
             pickup_distance: PickupDistance::from_u8(b[0x22] & 0x0f),
             gesture_target_lock: b[0x01] != 0,
-            anti_flicker: b[0x03],
+            anti_flicker: AntiFlicker::from_u8(b[0x03]),
             digital_zoom_percent: b[0x04],
+            wake_up_zoom_percent: u16::from_le_bytes([b[0x16], b[0x17]]),
+            sleep_images: (0..4).filter(|i| b[0x1a] >> i & 1 == 1).collect(),
+            default_work_mode: WorkMode {
+                main: b[0x20] >> 4,
+                sub: b[0x20] & 0x0f,
+            },
             face_auto_exposure: b[0x07] != 0,
             autofocus_face: b[0x0d] != 0,
             continuous_autofocus: b[0x0e] != 0,
@@ -94,6 +138,31 @@ impl Status {
             frame_rate: b[0x1f],
         }
     }
+}
+
+/// Product and platform codes from query 0x1948 (product 8 = Tiny 2 Lite, platform 8 = PW103).
+/// The answer also holds the firmware type, the branch and the version; the version is read
+/// with [`firmware_version`] instead, as OBSBOT Center shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ModelInfo {
+    pub product: u8,
+    pub platform: u8,
+}
+
+impl ModelInfo {
+    pub fn decode(d: &[u8]) -> Option<Self> {
+        (d.len() >= 8).then(|| Self {
+            product: d[0],
+            platform: d[2],
+        })
+    }
+}
+
+/// The version from query 0x0408: a u32 (LE) shown as byte3.byte2.byte1.byte0, so `01 08 02 06`
+/// is 6.2.8.1.
+pub fn firmware_version(d: &[u8]) -> Option<String> {
+    let v: [u8; 4] = d.get(..4)?.try_into().ok()?;
+    Some(format!("{}.{}.{}.{}", v[3], v[2], v[1], v[0]))
 }
 
 /// The 12-byte answer to query 0x0104.
@@ -205,6 +274,54 @@ mod tests {
         assert_eq!(s.auto_sleep_seconds, 120);
         assert_eq!(s.pickup_distance, Some(PickupDistance::Far));
         assert!(s.asleep);
+    }
+
+    #[test]
+    fn anti_flicker_auto_is_named_not_passed_on_as_3() {
+        // 3 = automatic detection; the V4L2 control takes it, so the camera can report it
+        let flicker = |v| Status::decode(&block(&[(0x03, v)])).anti_flicker;
+        assert_eq!(flicker(1), Some(AntiFlicker::Hz50));
+        assert_eq!(flicker(3), Some(AntiFlicker::Auto));
+        assert_eq!(flicker(9), None, "unknown values are not made up");
+        let json = serde_json::to_value(Status::decode(&block(&[(0x03, 3)]))).unwrap();
+        assert_eq!(json["anti_flicker"], "auto");
+    }
+
+    #[test]
+    fn wake_up_zoom_sleep_images_and_work_mode() {
+        // Read live (firmware 6.2.8.1): 0x16 = 33 (2.0x after waking), 0x1a = 3 (two images),
+        // 0x20 = 0. The sleep images are a bitmask, the work mode main << 4 | sub.
+        let s = Status::decode(&block(&[(0x16, 33), (0x1a, 3)]));
+        assert_eq!(s.wake_up_zoom_percent, 33);
+        assert_eq!(s.sleep_images, [0, 1]);
+        assert_eq!(s.default_work_mode, WorkMode { main: 0, sub: 0 });
+        let s = Status::decode(&block(&[
+            (0x16, 0x2c),
+            (0x17, 1),
+            (0x1a, 0b1010),
+            (0x20, 0x21),
+        ]));
+        assert_eq!(s.wake_up_zoom_percent, 300, "u16, not just the low byte");
+        assert_eq!(s.sleep_images, [1, 3], "bit n is mask<n>.jpg");
+        assert_eq!(s.default_work_mode, WorkMode { main: 2, sub: 1 });
+    }
+
+    #[test]
+    fn firmware_and_model_from_the_startup_queries() {
+        // 0x0408 answers: live on firmware 6.2.8.1 and capture 01 (the camera ran 6.2.7.4 then)
+        assert_eq!(
+            firmware_version(&hex::decode("0108020600000000").unwrap()),
+            Some("6.2.8.1".into())
+        );
+        assert_eq!(
+            firmware_version(&hex::decode("0407020600000000").unwrap()),
+            Some("6.2.7.4".into())
+        );
+        assert_eq!(firmware_version(&[1, 8, 2]), None);
+        // 0x1948, first 8 of 34 bytes: product 8, type 0, platform 8, branch 2, version
+        let info = ModelInfo::decode(&hex::decode("0800080201080206").unwrap()).unwrap();
+        assert_eq!((info.product, info.platform), (8, 8));
+        assert_eq!(ModelInfo::decode(&[8, 0, 8]), None);
     }
 
     #[test]

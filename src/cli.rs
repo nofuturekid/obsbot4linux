@@ -231,6 +231,8 @@ pub enum StartupCmd {
         #[arg(long, conflicts_with = "pan")]
         current: bool,
     },
+    /// Show the start pose and the picture settings of the initial state
+    Show,
     /// Move the camera to the start pose now (the pose it takes at power-on)
     Go,
 }
@@ -475,6 +477,15 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
                 }
             };
             done("startup", json!({"pose": pose, "preset": preset}))
+        }
+        Cmd::Startup(StartupCmd::Show) => {
+            let (pose, actions) = (cam.startup()?, cam.startup_actions()?);
+            let value = json!({"pose": pose, "actions": actions});
+            let text = flatten(&value);
+            Ok((
+                json!({"ok": true, "command": "startup_show", "value": value}),
+                text,
+            ))
         }
         Cmd::Startup(StartupCmd::Go) => cam
             .startup_go()

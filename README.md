@@ -74,6 +74,14 @@ camera. Two ways to use it:
   keys: `model` (the human name) and `device` (the V4L2 node to stream from, the stable
   `/dev/v4l/by-id/...-video-index0` link when there is one, else `/dev/videoN`). Both are
   `null` while no camera is connected.
+- The same output carries `firmware` (the version string, e.g. `"6.2.8.1"`, query `0x0408`) and
+  `model_info` (`{"product": 8, "platform": 8}`, query `0x1948`; product 8 is the Tiny 2 Lite).
+  The daemon reads them once per connect; both are `null` when the camera does not answer.
+  The serial number and UUID are not read. `obsbot4linux status` prints `firmware`.
+- `status.anti_flicker` is `off`, `50hz`, `60hz` or `auto` (the camera detects the mains
+  frequency itself); `status` also has `wake_up_zoom_percent` (0-100 like `digital_zoom_percent`,
+  the zoom factor after waking is 1 + 3 * value / 100), `sleep_images` (indices 0-3 of the
+  uploaded sleep images) and `default_work_mode` (`{"main", "sub"}`).
 
 ### Streaming applications
 
@@ -170,6 +178,8 @@ preset slot the start pose was taken from, `null` for an own pose.
 
 - `zone return-here` stores the current pose (queries `0x0043` and `0x6804`) as the position the
   zone tracking returns to; `zone return-go` moves the camera there.
+- `startup show` prints the start pose (query `0x3884`) and the picture settings of the initial
+  state (`0x3e84`); a setting the initial state does not set is `null`.
 - `startup go` moves the camera to the start pose now (what `zone return-here` sent before 0.5.0).
   The camera ignores it while asleep or with the gimbal locked.
 

@@ -10,7 +10,7 @@ use clap::Parser;
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::stat::{Mode, umask};
-use obsbot4linux::camera::{CAPABILITIES, Camera, ZoneInfo};
+use obsbot4linux::camera::{CAPABILITIES, Camera, Identity, ZoneInfo};
 use obsbot4linux::commands::AiMode;
 use obsbot4linux::error::{Error, Result};
 use obsbot4linux::state::{self, State};
@@ -109,6 +109,8 @@ struct Worker {
     last_full: Instant,
     /// Zone, hand and start pose readbacks with the time they were read; dropped after a command.
     zone: Option<(ZoneInfo, Instant)>,
+    /// Firmware and model codes, read once per connect: dropped when the camera goes away.
+    identity: Option<Identity>,
     dirty: bool,
     /// Whether the last poll found the camera; None before the first one.
     up: Option<bool>,
@@ -130,7 +132,11 @@ impl Worker {
                 &opened
             }
         };
-        let full = cam.full_status_with(known)?;
+        let full = cam.full_status_with(known, self.identity.clone())?;
+        self.identity.get_or_insert_with(|| Identity {
+            firmware: full.firmware.clone(),
+            model_info: full.model_info,
+        });
         if !reused {
             let info = ZoneInfo {
                 zone: full.zone.clone(),
@@ -165,6 +171,7 @@ impl Worker {
     /// Broadcasts "available: false" once when the camera goes away.
     fn mark_unavailable(&mut self) {
         self.last = None;
+        self.identity = None;
         if self.up != Some(false) {
             self.up = Some(false);
             self.hub.broadcast(&unavailable());
@@ -435,6 +442,7 @@ pub fn run() -> Result<()> {
         last: None,
         last_full: Instant::now(),
         zone: None,
+        identity: None,
         dirty: false,
         up: None,
     };
@@ -479,6 +487,7 @@ mod tests {
             last: Some(json!({"available": true, "model": "Tiny 2 Lite"})),
             last_full: Instant::now(),
             zone: None,
+            identity: None,
             dirty: false,
             up: Some(true),
         };
