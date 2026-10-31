@@ -5,7 +5,7 @@
 use std::io::Write;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use obsbot4linux::camera::Camera;
+use obsbot4linux::camera::{Camera, Identity};
 use obsbot4linux::commands::*;
 use obsbot4linux::device::Detected;
 use obsbot4linux::error::{Error, Result};
@@ -273,6 +273,12 @@ fn value_name<T: serde::Serialize>(v: T) -> Value {
 /// Runs the command and returns (JSON result, text for humans). Setters answer with
 /// {"ok","command","value"}; `status` prints the status object itself.
 pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
+    execute_with(cmd, None)
+}
+
+/// Like [`execute`]; the daemon passes the identity it already read, so `status` does not ask
+/// the camera for the firmware again.
+pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, String)> {
     // refuse before opening the camera
     if let Cmd::FactoryReset { yes: false } = cmd {
         return Err(Error::Invalid(
@@ -302,7 +308,7 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
             unreachable!("handled above")
         }
         Cmd::Status => {
-            let full = value_name(cam.full_status()?);
+            let full = value_name(cam.full_status_with(None, identity)?);
             // the box is for machines: plain text only says whether the camera sees its target
             let mut plain = full.clone();
             if let Some(m) = plain.as_object_mut() {
@@ -479,7 +485,9 @@ pub fn execute(cmd: Cmd) -> Result<(Value, String)> {
             done("startup", json!({"pose": pose, "preset": preset}))
         }
         Cmd::Startup(StartupCmd::Show) => {
-            let (pose, actions) = (cam.startup()?, cam.startup_actions()?);
+            // the pose is the point of the command: a refused actions query leaves them null
+            let pose = cam.startup()?;
+            let actions = cam.startup_actions().ok();
             let value = json!({"pose": pose, "actions": actions});
             let text = flatten(&value);
             Ok((

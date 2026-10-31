@@ -9,9 +9,9 @@ All notable changes to OBSBot4Linux. The format follows
 
 - `firmware` (e.g. `6.2.8.1`, query `0x0408`) and `model_info` (`product`, `platform`, query
   `0x1948`) in `status` and the state events, read once per connect; `obsbot4linux status`
-  prints the firmware. The serial number and UUID are not read (#63).
+  prints the firmware (through the daemon, from what it already read). The serial number and UUID are not read (#63).
 - `startup show` prints the start pose (`0x3884`) and the picture settings of the initial state
-  (`0x3e84`) (#89).
+  (`0x3e84`) (#89). A set group shows the byte as read, a group that is not set is `null`.
 - `status` shows `wake_up_zoom_percent`, `sleep_images` and `default_work_mode` (#82).
 
 ### Changed

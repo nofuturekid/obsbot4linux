@@ -75,7 +75,8 @@ chk status.auto_sleep_seconds off 600 .status.auto_sleep_seconds # off keeps the
 # anti-flicker: status byte 0x03 vs V4L2 power_line_frequency
 orig_plf=$(jq -r .image.power_line_frequency.value <<<"$snap")
 for v in 0 2 1; do
-	try status.anti_flicker $v $v .status.anti_flicker image power_line_frequency $v
+	name=$(case $v in 0) echo off ;; 1) echo 50hz ;; 2) echo 60hz ;; esac)
+	try status.anti_flicker $v "\"$name\"" .status.anti_flicker image power_line_frequency $v
 done
 
 # AI modes (normal, upper-body, ... stayed static in an empty, dark room; hand and group stuck).

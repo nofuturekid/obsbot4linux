@@ -7,7 +7,7 @@
 //! degrees positive up. The camera's preset format has tilt positive down, so the sign is
 //! flipped when writing and reading.
 
-use crate::commands::{TrackingSpeed, gimbal_angles_ok};
+use crate::commands::gimbal_angles_ok;
 use crate::error::{Error, Result};
 use crate::frame::{FRAME_SIZE, frame};
 use serde::{Deserialize, Serialize};
@@ -167,13 +167,16 @@ pub fn startup_picture_settings(seq: u16) -> [u8; FRAME_SIZE] {
 }
 
 /// The picture settings of the initial state, from the 40-byte answer to `0x3e84` (the layout of
-/// `0x3e44`). A group the initial state does not set is `None`: its first byte is `0xff`.
+/// `0x3e44`). A group the initial state does not set is `None` (first byte `0xff`); a set group
+/// shows the byte as read, because only some values are known (autofocus and exposure 1 = set,
+/// white balance mode 5 = manual temperature, tracking speed 0 = standard).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StartupActions {
-    pub tracking_speed: Option<TrackingSpeed>,
-    pub autofocus: Option<bool>,
-    pub auto_exposure: Option<bool>,
-    /// Manual white balance in Kelvin.
+    pub tracking_speed: Option<u8>,
+    pub autofocus: Option<u8>,
+    pub auto_exposure: Option<u8>,
+    pub white_balance_mode: Option<u8>,
+    /// Kelvin; only with white balance mode 5.
     pub white_balance_kelvin: Option<u16>,
     pub contrast: Option<u8>,
     pub saturation: Option<u8>,
@@ -186,17 +189,17 @@ impl StartupActions {
         if d.len() < 24 {
             return None;
         }
-        let flag = |i: usize| (d[i] != 0xff).then_some(d[i] == 1);
-        let level = |i: usize| (d[i] <= 100).then_some(d[i]);
+        let group = |i: usize| (d[i] != 0xff).then_some(d[i]);
         Some(Self {
-            tracking_speed: TrackingSpeed::from_u8(d[1]),
-            autofocus: flag(2),
-            auto_exposure: flag(6),
+            tracking_speed: group(1),
+            autofocus: group(2),
+            auto_exposure: group(6),
+            white_balance_mode: group(13),
             white_balance_kelvin: (d[13] == 5).then(|| u16::from_le_bytes([d[14], d[15]])),
-            contrast: level(20),
-            saturation: level(21),
-            sharpness: level(22),
-            hue: level(23),
+            contrast: group(20),
+            saturation: group(21),
+            sharpness: group(22),
+            hue: group(23),
         })
     }
 }
@@ -283,6 +286,7 @@ mod tests {
         assert_eq!(a.tracking_speed, None);
         assert_eq!(a.autofocus, None);
         assert_eq!(a.auto_exposure, None);
+        assert_eq!(a.white_balance_mode, None);
         assert_eq!(a.white_balance_kelvin, None);
         assert_eq!(a.contrast, None);
     }
@@ -299,12 +303,24 @@ mod tests {
         d[14..16].copy_from_slice(&[0xd8, 0x0e]);
         d[20] = 60;
         let a = StartupActions::decode(&d).unwrap();
-        assert_eq!(a.tracking_speed, Some(TrackingSpeed::Sport));
-        assert_eq!(a.autofocus, Some(true));
-        assert_eq!(a.auto_exposure, Some(false));
+        assert_eq!(a.tracking_speed, Some(2));
+        assert_eq!(a.autofocus, Some(1));
+        assert_eq!(
+            a.auto_exposure,
+            Some(0),
+            "a set group with value 0 is not 'not set'"
+        );
+        assert_eq!(a.white_balance_mode, Some(5));
         assert_eq!(a.white_balance_kelvin, Some(3800));
         assert_eq!(a.contrast, Some(60));
         assert_eq!(a.saturation, None, "0xff is not set, not 255");
+        // a white balance mode other than manual is set, with no Kelvin to show
+        d[13] = 3;
+        let a = StartupActions::decode(&d).unwrap();
+        assert_eq!(
+            (a.white_balance_mode, a.white_balance_kelvin),
+            (Some(3), None)
+        );
         assert_eq!(StartupActions::decode(&d[..23]), None);
     }
 

@@ -4,7 +4,7 @@
 //! every client are serialised and sequence numbers stay unique), executes requests with the
 //! CLI's own argument parser and polls the camera to notice changes it makes itself.
 
-use crate::cli::{Cli, Cmd, PresetCmd, execute};
+use crate::cli::{Cli, Cmd, PresetCmd, execute_with};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
 use nix::errno::Errno;
@@ -133,7 +133,7 @@ impl Worker {
             }
         };
         let full = cam.full_status_with(known, self.identity.clone())?;
-        self.identity.get_or_insert_with(|| Identity {
+        self.remember_identity(Identity {
             firmware: full.firmware.clone(),
             model_info: full.model_info,
         });
@@ -165,6 +165,14 @@ impl Worker {
                 self.last = Some(state);
             }
             Err(_) => self.mark_unavailable(),
+        }
+    }
+
+    /// Keeps the identity once the camera has answered at least one of the two queries; an
+    /// all-empty read is tried again with the next full read.
+    fn remember_identity(&mut self, read: Identity) {
+        if self.identity.is_none() && (read.firmware.is_some() || read.model_info.is_some()) {
+            self.identity = Some(read);
         }
     }
 
@@ -284,7 +292,10 @@ impl Worker {
                     let (result, changes) = match parse_request(&job.args) {
                         Ok(cmd) => {
                             let changes = !read_only(&cmd);
-                            (execute(cmd).map_err(|e| e.to_string()), changes)
+                            (
+                                execute_with(cmd, self.identity.clone()).map_err(|e| e.to_string()),
+                                changes,
+                            )
                         }
                         Err(e) => (Err(e), false),
                     };
@@ -508,6 +519,38 @@ mod tests {
         assert!(keys["model"].is_null() && keys["device"].is_null());
         assert_eq!(state["streaming"], false);
         assert_eq!(state["streaming_apps"], json!([]));
+    }
+
+    #[test]
+    fn identity_is_kept_once_answered_and_dropped_with_the_camera() {
+        let mut worker = Worker {
+            hub: Arc::default(),
+            pose: Arc::default(),
+            last: None,
+            last_full: Instant::now(),
+            zone: None,
+            identity: None,
+            dirty: false,
+            up: Some(true),
+        };
+        let none = Identity {
+            firmware: None,
+            model_info: None,
+        };
+        let known = Identity {
+            firmware: Some("6.2.8.1".into()),
+            model_info: None,
+        };
+        worker.remember_identity(none.clone());
+        assert_eq!(worker.identity, None, "a silent camera is asked again");
+        worker.remember_identity(known.clone());
+        worker.remember_identity(none);
+        assert_eq!(worker.identity, Some(known), "once per connect");
+        worker.mark_unavailable();
+        assert_eq!(
+            worker.identity, None,
+            "a replugged camera may have new firmware"
+        );
     }
 
     #[test]
