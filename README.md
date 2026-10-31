@@ -13,7 +13,9 @@ One program, `obsbot4linux`:
 
 - **`obsbot4linux daemon`** owns the camera state. It runs as a systemd user service,
   started on demand through the socket `$XDG_RUNTIME_DIR/obsbot4linux.sock`. After every
-  change, from any client, it sends the new state to all connected clients, and
+  change, from any client, it reads the camera again and sends the new state to all connected
+  clients (once, after the reply, about a second later; never a state with values from before
+  the change), and
   it polls the camera in the background to notice changes the camera makes itself
   (a gesture switching AI tracking on, a factory reset, unplugging).
 - **CLI** (`obsbot4linux status`, `obsbot4linux fov wide`, `obsbot4linux gimbal --pan 10`, ... with

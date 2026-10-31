@@ -11,9 +11,8 @@ use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::stat::{Mode, umask};
 use obsbot4linux::camera::{CAPABILITIES, Camera, Identity, ZoneInfo};
-use obsbot4linux::commands::AiMode;
 use obsbot4linux::error::{Error, Result};
-use obsbot4linux::state::{self, State};
+use obsbot4linux::state;
 use obsbot4linux::streaming;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -206,28 +205,16 @@ impl Worker {
         }
     }
 
-    /// After a change: broadcast at once with the fresh status block and state file merged
-    /// into the last full state; the queries follow in the next full read.
-    fn publish_quick(&mut self) {
-        let cam = Camera::open().ok();
-        let fresh = cam.as_ref().map(Camera::status);
-        match (fresh, self.last.as_mut()) {
-            (Some(Ok(status)), Some(last)) => {
-                if status.ai_mode == Some(AiMode::Static) {
-                    last["target"] = Value::Null;
-                }
-                last["status"] = serde_json::to_value(status).unwrap_or(Value::Null);
-                // the remembered values only; zone_follow and startup come from the camera
-                if let Ok(Value::Object(fresh)) = serde_json::to_value(State::load()) {
-                    for (k, v) in fresh {
-                        last["state"][k] = v;
-                    }
-                }
-                self.hub.broadcast(last);
-                self.dirty = true;
-            }
-            _ => self.publish_full(cam.as_ref(), true),
+    /// After a change: nothing is broadcast until the camera has been read again (#107). The
+    /// status block alone is not enough: zone, hand, image, zoom and audio values come only with
+    /// a full read, and an event built from the last full state would carry their old values
+    /// and pull a client's optimistic value back for the length of a full read. Requests that
+    /// are already queued run first, then one forced full read announces all of them.
+    fn after_change(&mut self, keep_zone: bool) {
+        if !keep_zone {
+            self.zone = None;
         }
+        self.dirty = true;
     }
 
     /// The gimbal pose (only while a client wants it), the tracking target and the streaming
@@ -328,13 +315,11 @@ impl Worker {
                     let changed = changes && result.is_ok();
                     let _ = job.reply.send(result);
                     if changed {
-                        if !keep_zone {
-                            self.zone = None;
-                        }
-                        self.publish_quick();
+                        self.after_change(keep_zone);
                     }
                 }
-                Err(RecvTimeoutError::Timeout) if self.dirty => self.publish_full(None, false),
+                // forced: a client waits for this event to confirm its change, even an unchanged one
+                Err(RecvTimeoutError::Timeout) if self.dirty => self.publish_full(None, true),
                 Err(RecvTimeoutError::Timeout) => {
                     self.tick();
                     next_tick = Instant::now() + TICK;
@@ -547,6 +532,44 @@ mod tests {
         assert!(keys["model"].is_null() && keys["device"].is_null());
         assert_eq!(state["streaming"], false);
         assert_eq!(state["streaming_apps"], json!([]));
+    }
+
+    #[test]
+    fn a_change_announces_nothing_until_the_camera_is_read_again() {
+        // the last full state still has the old hand value; broadcasting it after `hand tilt off`
+        // made the widget's switch jump back for the length of a full read (#107)
+        let hub = Arc::new(Hub::default());
+        let (srv, client) = UnixStream::pair().unwrap();
+        hub.add(srv).unwrap();
+        let info = ZoneInfo {
+            zone: None,
+            hand: None,
+            startup: None,
+            framing: None,
+            presets: None,
+        };
+        let mut worker = Worker {
+            hub: hub.clone(),
+            pose: Arc::default(),
+            last: Some(json!({"available": true, "hand": {"tilt_enabled": true}})),
+            last_full: Instant::now(),
+            zone: Some((info.clone(), Instant::now())),
+            identity: None,
+            dirty: false,
+            up: Some(true),
+        };
+        worker.after_change(true);
+        assert!(worker.dirty, "a full read follows at once");
+        assert_eq!(
+            worker.zone.as_ref().map(|(z, _)| z),
+            Some(&info),
+            "a stop keeps the cache"
+        );
+        worker.after_change(false);
+        assert!(worker.zone.is_none(), "the readbacks are asked again");
+        drop((worker, hub));
+        let events = BufReader::new(client).lines().count();
+        assert_eq!(events, 0, "no event with values from before the command");
     }
 
     #[test]

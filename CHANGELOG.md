@@ -5,6 +5,12 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The daemon no longer broadcasts a state right after a change that still has the old zone, hand,
+  start pose, preset, image, zoom and audio values. It now sends one state after the full read
+  that follows the change, so a client's optimistic value is not pulled back for a second (#107).
+
 ## [0.13.1] - 2026-10-31
 
 ### Fixed
