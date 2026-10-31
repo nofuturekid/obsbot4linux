@@ -5,6 +5,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-31
+
 ### Added
 
 - `zone view list|save|rename|delete|go` stores, lists and goes to named poses in the camera
