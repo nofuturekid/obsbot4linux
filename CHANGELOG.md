@@ -5,6 +5,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-10-31
+
 ### Fixed
 
 - The daemon no longer broadcasts a state right after a change that still has the old zone, hand,
