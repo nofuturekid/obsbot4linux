@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 const TICK: Duration = Duration::from_secs(1);
 /// The 0x0104 / zoom queries and the image controls are read at least this often.
 const FULL_EVERY: Duration = Duration::from_secs(5);
-/// The zone, hand and start pose readbacks (nine queries) change only by a command, so they are asked
+/// The zone, hand, start pose and preset readbacks change only by a command, so they are asked
 /// again after one of ours and otherwise this often, to notice changes made with OBSBOT Center.
 const ZONE_EVERY: Duration = Duration::from_secs(60);
 
@@ -161,6 +161,7 @@ impl Worker {
                 hand: full.hand.clone(),
                 startup: full.state.startup,
                 framing: full.framing.clone(),
+                presets: full.presets.clone(),
             };
             self.zone = Some((info, Instant::now()));
         }
@@ -636,6 +637,16 @@ mod tests {
         }
         for line in ["gimbal --pan 1", "gimbal rate --pan 1", "zoom 2", "led 1"] {
             assert!(!keeps_zone_cache(&parsed(line)), "{line}");
+        }
+    }
+
+    #[test]
+    fn preset_changes_drop_the_cache_so_the_new_list_is_broadcast() {
+        // the preset list is cached with the zone data; a preset save, rename or delete must
+        // not keep it, or open widgets would show the old list for up to a minute
+        for line in ["preset save 1", "preset rename 1 desk", "preset delete 1"] {
+            let cmd = parsed(line);
+            assert!(!read_only(&cmd) && !keeps_zone_cache(&cmd), "{line}");
         }
     }
 

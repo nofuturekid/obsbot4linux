@@ -5,6 +5,12 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `presets` (`[{slot, name, pose}]`, `null` when the camera did not answer) in `status` and the
+  daemon's state events. It is read with the zone and hand data, so a `preset save|rename|delete`
+  through the daemon broadcasts the new list at once. Capability `preset_state` (#103).
+
 ## [0.12.0] - 2026-10-31
 
 ### Added

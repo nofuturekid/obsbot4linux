@@ -69,6 +69,7 @@ pub const CAPABILITIES: &[&str] = &[
     "startup_ai",
     "image",
     "preset",
+    "preset_state",
     "factory_reset",
     "target",
     "live_pose_on_demand",
@@ -175,6 +176,8 @@ pub struct FullStatus {
     pub hand: Option<Hand>,
     /// Tracking speed mode and framing options read from the camera; None when it did not answer.
     pub framing: Option<Framing>,
+    /// The presets stored in the camera, sorted by slot; null when the camera did not answer.
+    pub presets: Option<Vec<Preset>>,
     pub capabilities: Vec<&'static str>,
     /// What `gimbal`, the poses and `zone area` accept, so clients need not hardcode it.
     pub limits: Limits,
@@ -278,6 +281,7 @@ pub struct ZoneInfo {
     pub hand: Option<Hand>,
     pub startup: Option<Startup>,
     pub framing: Option<Framing>,
+    pub presets: Option<Vec<Preset>>,
 }
 
 /// What does not change while the camera stays connected; the daemon reads it once per connect.
@@ -597,6 +601,7 @@ impl Camera {
             hand: self.hand().ok(),
             startup: self.startup().ok(),
             framing: self.framing().ok(),
+            presets: self.presets().ok(),
         }
     }
 
@@ -637,6 +642,7 @@ impl Camera {
             hand,
             startup,
             framing,
+            presets,
         } = known.unwrap_or_else(|| self.zone_info());
         let Identity {
             firmware,
@@ -666,6 +672,7 @@ impl Camera {
             zone,
             hand,
             framing,
+            presets,
             capabilities: CAPABILITIES.to_vec(),
             limits: LIMITS,
         })
@@ -1361,6 +1368,15 @@ mod full_status_tests {
             },
             zone: None,
             hand: None,
+            presets: Some(vec![Preset {
+                slot: 1,
+                name: "Desk".into(),
+                pose: Pose {
+                    pan: 10.0,
+                    tilt: -5.0,
+                    zoom: 2.0,
+                },
+            }]),
             framing: Some(Framing {
                 speed_mode: SpeedMode::VeryFast,
                 auto_zoom: true,
@@ -1383,6 +1399,12 @@ mod full_status_tests {
                 "size": "medium_close_up", "zoom_speed": "fast",
                 "offset": {"x": 0.125, "y": -0.0625}, "part_mode": "head_removal"})
         );
+        // the widget reads `presets` at the top level; a camera that did not answer gives null
+        assert_eq!(
+            v["presets"],
+            serde_json::json!([{"slot": 1, "name": "Desk", "pose": {"pan": 10.0, "tilt": -5.0, "zoom": 2.0}}])
+        );
+        assert!(CAPABILITIES.contains(&"preset_state"));
         assert_eq!(v["model"], "Tiny 2 Lite");
         assert_eq!(v["device"], "/dev/v4l/by-id/x-video-index0");
         assert_eq!(v["streaming"], true);

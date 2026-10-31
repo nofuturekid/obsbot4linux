@@ -229,6 +229,11 @@ poses to go to, like presets with a name and no fixed number of slots. `zone.vie
 lists them (`null` when the camera did not answer; queries `0x1344`, then `0x1504` and `0x1444`
 for each id). Capability: `zone_views`.
 
+`presets` (top level of the status and of the daemon's state events) lists the stored presets as
+`[{slot, name, pose}]`, `null` when the camera did not answer. It is cached with the zone data and
+read again after any command, so `preset save|rename|delete` through the daemon reaches open
+clients at once. Capability: `preset_state`.
+
 | Command | Does |
 | --- | --- |
 | `zone view list` | lists the views |
