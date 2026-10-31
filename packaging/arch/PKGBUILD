@@ -2,7 +2,7 @@
 # out). The release workflow sets OBSBOT4LINUX_TARBALL to a source tarball of the tag instead.
 pkgname=obsbot4linux
 # Cargo.toml's version; scripts/changelog-section.sh fails the release unless they match.
-pkgver=0.11.0
+pkgver=0.11.1
 pkgrel=1
 pkgdesc='Control OBSBOT webcams (Tiny 2 Lite) from the console, with a daemon for the DMS widget'
 arch=('x86_64' 'aarch64')

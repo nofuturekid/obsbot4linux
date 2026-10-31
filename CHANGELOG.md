@@ -5,6 +5,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-31
+
 ### Added
 
 - `startup set --ai static|normal|upper-body|headless|group|none` sets the AI mode of the initial
