@@ -581,7 +581,7 @@ impl Camera {
 
     /// Moves the gimbal to the boot pose (the start pose of the initial state).
     pub fn startup_go(&self) -> Result<()> {
-        self.framed(&cmd::startup_go(self.seq.next()))
+        self.short(&cmd::startup_go())
     }
 
     pub fn set_zone_follow(&self, on: bool) -> Result<()> {

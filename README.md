@@ -171,15 +171,17 @@ preset slot the start pose was taken from, `null` for an own pose.
 - `zone return-here` stores the current pose (queries `0x0043` and `0x6804`) as the position the
   zone tracking returns to; `zone return-go` moves the camera there.
 - `startup go` moves the camera to the start pose now (what `zone return-here` sent before 0.5.0).
+  The camera ignores it while asleep or with the gimbal locked.
 
 The daemon reads these seven values at start, after each command and then once a minute, not with
 every poll. Capability: `zone_return`.
 
 When the target leaves the area, the camera returns to the return position and, with `zone follow
-on`, keeps tracking and takes the next person. A preset recall (`preset recall`) or `startup go` sets
+on`, keeps tracking and takes the next person. A preset recall (`preset recall`, framed `0x39c4`) sets
 a flag in the camera that turns the next such return into Static once; after that it keeps
-tracking again. obsbot4linux reads the live pose from the gimbal controller (`0x0043`) because
-the AI's pose query `0x6604` sets the same flag (#67).
+tracking again. There is no other way to recall a preset. obsbot4linux avoids the flag
+elsewhere: it reads the live pose from the gimbal controller (`0x0043`), not with the AI's pose
+query `0x6604` (#67), and `startup go` uses the short command `00`, not the framed `0x3904` (#79).
 
 ### Hand tracking return position
 
