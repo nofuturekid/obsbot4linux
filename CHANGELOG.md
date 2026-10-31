@@ -10,6 +10,9 @@ All notable changes to OBSBot4Linux. The format follows
 - `startup go` no longer turns the next zone tracking return into Static. It sends the short
   command `00` instead of the framed `0x3904`, which arms that flag in the camera (#79). The
   camera ignores the short command while asleep or with the gimbal locked.
+- The error code of a rejected query ("camera rejected query ...") was read from the wrong place.
+  Those answers have a 16-byte header with the code (a signed 16-bit number, e.g. -3) in an
+  extension; it is now read from there and shown in decimal (#62).
 
 ## [0.8.0] - 2026-10-31
 

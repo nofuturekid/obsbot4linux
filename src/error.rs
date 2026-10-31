@@ -16,8 +16,8 @@ pub enum Error {
     Invalid(String),
     #[error("camera did not answer query {0:#06x}")]
     NoAnswer(u16),
-    #[error("camera rejected query {0:#06x} (error code {1:#06x})")]
-    Rejected(u16, u16),
+    #[error("camera rejected query {0:#06x} (error code {1})")]
+    Rejected(u16, i16),
     #[error("{0}")]
     Unsupported(String),
     #[error("the camera is busy: another obsbot4linux process held it for 5 s")]

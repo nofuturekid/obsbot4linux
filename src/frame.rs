@@ -69,8 +69,20 @@ pub fn query_frame(receiver: u8, command: u16, sequence: u16) -> [u8; FRAME_SIZE
 pub enum Answer<'a> {
     /// Type 0x29: the value, in the format the setter takes.
     Value(&'a [u8]),
-    /// Type 0x89: rejected, with the error code from the data.
-    Rejected(u16),
+    /// Type 0x89: rejected, with the signed error code from the header extension.
+    Rejected(i16),
+}
+
+/// The error code of a rejected answer. Those frames have a 16-byte header (bytes 4..6) whose
+/// extension at 12..16 is tag 0, length 2 and the i16 code; the bytes after it are not a data
+/// section. 0 when the header has no such extension.
+fn error_code(reply: &[u8]) -> i16 {
+    let header = u16::from_le_bytes([reply[4], reply[5]]) as usize;
+    if header >= DATA_OFFSET && reply[12..14] == [0x00, 0x02] {
+        i16::from_le_bytes([reply[14], reply[15]])
+    } else {
+        0
+    }
 }
 
 /// Parses a selector-2 read; None when it is not the answer to `sequence` (yet).
@@ -82,10 +94,7 @@ pub fn parse_answer(reply: &[u8], sequence: u16) -> Option<Answer<'_>> {
     let data = &reply[DATA_OFFSET..DATA_OFFSET + len];
     match reply[1] {
         0x29 => Some(Answer::Value(data)),
-        0x89 => Some(Answer::Rejected(u16::from_le_bytes([
-            *data.first().unwrap_or(&0),
-            *data.get(1).unwrap_or(&0),
-        ]))),
+        0x89 => Some(Answer::Rejected(error_code(reply))),
         _ => None,
     }
 }
@@ -180,9 +189,21 @@ mod tests {
     }
 
     #[test]
-    fn rejected_answer_carries_the_code() {
+    fn rejected_answer_carries_the_code_from_the_header_extension() {
+        // Captured rejection of query 0xc442 (capture 01): header length 16, extension
+        // `00 02 fd ff` = -3. The bytes after it are not an error code: reading them from
+        // offset 16 as before gave the wrong number.
+        let mut r = [0u8; 60];
+        let captured = hex::decode("aa890400100046b7020a42c40002fdff0000803f01010014").unwrap();
+        r[..captured.len()].copy_from_slice(&captured);
+        assert_eq!(parse_answer(&r, 4), Some(Answer::Rejected(-3)));
+    }
+
+    #[test]
+    fn rejected_answer_without_extension_has_no_code() {
+        // 12-byte header: nothing to read, and the data section of an error is ignored
         let r = answer(0x89, 7, &[0x0a, 0x00]);
-        assert_eq!(parse_answer(&r, 7), Some(Answer::Rejected(0x000a)));
+        assert_eq!(parse_answer(&r, 7), Some(Answer::Rejected(0)));
     }
 
     #[test]
