@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "timezone": "Europe/Berlin",
+  "schedule": ["* 0-5 * * 1"],
+  "dependencyDashboard": true,
+  "automerge": false,
+  "enabledManagers": ["cargo", "github-actions", "custom.regex"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["* 0-5 1-7 * 1"]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Container images pinned by digest in the release workflow (arch_image keys)",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": ["arch_image:\\s*(?<depName>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "datasourceTemplate": "docker",
+      "currentValueTemplate": "latest"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "cargo minor and patch",
+      "groupSlug": "cargo-minor-patch"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "github-actions minor and patch",
+      "groupSlug": "github-actions-minor-patch"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["docker"],
+      "groupName": "container images",
+      "groupSlug": "container-images"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "groupName": null
+    }
+  ]
+}
