@@ -232,10 +232,12 @@ pub fn zone_area(
         frame(TRACKING, 0x4d84, &pitch.1.to_le_bytes(), seqs[3]),
     ])
 }
-/// Moves the gimbal to the boot pose (`aiTrgGimbalBootPosR`, the start pose of the initial
-/// state). Does not store anything; Center's button next to "return to start position" (capture 18).
-pub fn startup_go(seq: u16) -> [u8; FRAME_SIZE] {
-    frame(TRACKING, 0x3904, &[0x01], seq)
+/// Moves the gimbal to the boot pose (the start pose of the initial state). Does not store
+/// anything. Short command `00`: the camera sends the AI request 0x3904 itself. Center's framed
+/// 0x3904 does the same but arms the flag that turns the next zone return into Static (#79); the
+/// short command does not. The camera ignores it while asleep or with the gimbal locked.
+pub fn startup_go() -> [u8; 3] {
+    [0x00, 0x01, 0x01]
 }
 /// Moves the gimbal to the zone return position (`aiTrgLimitedZoneTrackInitPosR`, no data).
 pub fn zone_return_go(seq: u16) -> [u8; FRAME_SIZE] {
@@ -393,7 +395,6 @@ mod tests {
         assert_captured(frames[1], "aa25af010c00a1b30a04844c040069f60000c842");
         assert_captured(frames[2], "aa25b0010c0030160a04044d04003b970000f0c1");
         assert_captured(frames[3], "aa25b1010c0000130a04844d04003a370000f041");
-        assert_captured(startup_go(56), "aa2538000c00bba30a040439010027ff01");
     }
 
     #[test]
@@ -497,6 +498,8 @@ mod tests {
         assert_eq!(led(2).unwrap(), [0x1a, 0x01, 0x02]);
         assert!(led(4).is_err());
         assert_eq!(hdr(true), [0x01, 0x01, 0x01]);
+        // a short command, never the framed 0x3904 that arms the zone-Static flag (#79)
+        assert_eq!(startup_go(), [0x00, 0x01, 0x01]);
     }
 
     #[test]

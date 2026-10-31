@@ -3,6 +3,14 @@
 All notable changes to OBSBot4Linux. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- `startup go` no longer turns the next zone tracking return into Static. It sends the short
+  command `00` instead of the framed `0x3904`, which arms that flag in the camera (#79). The
+  camera ignores the short command while asleep or with the gimbal locked.
+
 ## [0.8.0] - 2026-10-31
 
 ### Changed
