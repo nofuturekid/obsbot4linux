@@ -147,7 +147,7 @@ impl Tracking {
 pub struct Target {
     /// True while the camera has a target (status LED blue), false while it searches (yellow).
     pub detected: bool,
-    /// Four normalised (0..1) coordinates as the camera sends them; the last box while searching.
+    /// Left, top, right, bottom, normalised (0..1) to the picture; the last box while searching.
     #[serde(rename = "box")]
     pub coords: [f32; 4],
 }

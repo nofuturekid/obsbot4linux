@@ -119,8 +119,8 @@ carry `target` (query `0x01c4`): whether the camera currently has someone to fol
   last one it had.
 - `null`: tracking is Static (LED green), no camera is connected, or the reply was unusable.
 
-`box` is four normalised (0..1) coordinates in the order the camera sends them; which corner or
-size each one is has not been established. Plain `obsbot4linux status` prints one line,
+`box` is the tracked person's box as four normalised (0..1) coordinates: left, top, right,
+bottom of the picture (checked by drawing it over the preview). Plain `obsbot4linux status` prints one line,
 `target: detected` or `target: searching`, while tracking. The daemon asks once a second, only
 while tracking is on, and sends a state event when `detected` changes. Box movement alone sends
 none; the latest box is included whenever an event goes out for another reason. Capability: `target`.
