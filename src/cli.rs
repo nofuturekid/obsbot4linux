@@ -63,9 +63,11 @@ pub enum GimbalCmd {
     Stop,
     /// Turn the gimbal so that a point of the picture moves to its centre: x and y from 0.0 to
     /// 1.0, from the top left (switches tracking to static first)
+    #[command(hide = true)]
     Center { x: f32, y: f32 },
-    /// Keep turning at a speed in degrees per second (up to 180) until `gimbal stop` or a speed
-    /// of 0, like the joystick of OBSBOT Center (switches tracking to static first)
+    /// Keep turning at a speed in degrees per second (up to 178) UNTIL `gimbal stop` or a speed
+    /// of 0, also when the client is gone; like the joystick of OBSBOT Center (switches
+    /// tracking to static first)
     Rate {
         /// Positive turns the camera to its left
         #[arg(long, allow_negative_numbers = true)]

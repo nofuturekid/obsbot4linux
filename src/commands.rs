@@ -394,6 +394,9 @@ pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8
 /// every axis at 180.
 pub const GIMBAL_SPEED_MIN: f32 = 1.0;
 pub const GIMBAL_SPEED_MAX: f32 = 180.0;
+/// Fastest rate of `gimbal rate`: 0x6484 leaves an axis alone from |v| = 179 up (like the
+/// pose commands), so it would report success without turning.
+pub const GIMBAL_RATE_MAX: f32 = 178.0;
 
 /// Like [`gimbal_pose`], at `speed` degrees per second (0x6544, joint angles): three speeds, then
 /// the three targets.
@@ -425,9 +428,9 @@ pub fn gimbal_rate(
 ) -> Result<[u8; FRAME_SIZE]> {
     if ![pan, tilt]
         .iter()
-        .all(|v| v.is_finite() && v.abs() <= GIMBAL_SPEED_MAX)
+        .all(|v| v.is_finite() && v.abs() <= GIMBAL_RATE_MAX)
     {
-        return Err(invalid("gimbal rate is -180 to 180 degrees per second"));
+        return Err(invalid("gimbal rate is -178 to 178 degrees per second"));
     }
     // measured: with mirror and invert off, a positive yaw speed lowers the pose's pan
     let yaw = if mirror != invert { pan } else { -pan } + 0.0;
@@ -796,6 +799,10 @@ mod tests {
             f32::from_le_bytes(f[16 + 4..16 + 8].try_into().unwrap()),
             -3.0
         );
+        assert!(gimbal_rate(178.0, -178.0, false, false, 0).is_ok());
+        // 179 and up is "keep this axis" on the wire: success without a move
+        assert!(gimbal_rate(179.0, 0.0, false, false, 0).is_err());
+        assert!(gimbal_rate(0.0, -179.0, false, false, 0).is_err());
         assert!(gimbal_rate(181.0, 0.0, false, false, 0).is_err());
         assert!(gimbal_rate(0.0, f32::NAN, false, false, 0).is_err());
     }
