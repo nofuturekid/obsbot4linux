@@ -20,14 +20,15 @@ All notable changes to OBSBot4Linux. The format follows
 
 ### Fixed
 
+- `zone on|off` sends `0x08c4` only. `0x5084` has no handler in the firmware and the 100 ms pause
+  was not needed: the camera followed `0x08c4` alone both ways (#81).
 - A reply without a data section (type `0x09`, what the camera answers to the view list while it
   has none) counted as "no answer" and ran into the poll timeout; it now reads as empty.
 
 ### Changed
 
 - `zone.return` stays a pose: the leading word of `0x4ec4` is the preset id, always 0, so the
-  camera has no "not set" for it (#57). `0x5084` has no handler in the firmware; it is still sent
-  with `0x08c4` until `0x08c4` alone is tried on the camera (#81).
+  camera has no "not set" for it (#57).
 
 ## [0.11.1] - 2026-10-31
 

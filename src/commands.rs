@@ -250,14 +250,11 @@ pub fn hand_side(side: HandSide, seq: u16) -> [u8; FRAME_SIZE] {
 pub fn invert(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
     frame(TRACKING, 0x3b84, &[on as u8], seq)
 }
-/// Zone tracking is a pair of frames that must be sent about 100 ms apart.
-/// The second frame, `0x5084`, has no handler in firmware 6.2.8.1 (static analysis); `0x08c4`
-/// alone may be enough. Not tried on the camera, so the pair stays as OBSBOT Center sends it (#81).
-pub fn zone_tracking(on: bool, seq1: u16, seq2: u16) -> [[u8; FRAME_SIZE]; 2] {
-    [
-        frame(TRACKING, 0x08c4, &[on as u8], seq1),
-        frame(TRACKING, 0x5084, &[on as u8], seq2),
-    ]
+/// Zone tracking on / off (`0x08c4`). OBSBOT Center follows it with `0x5084` about 100 ms later,
+/// but the firmware has no handler for that id, and on a Tiny 2 Lite `0x08c4` alone switched zone
+/// tracking both ways (status byte 10 of `0x0104` followed after 1 s and 3 s, #81).
+pub fn zone_tracking(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x08c4, &[on as u8], seq)
 }
 /// Gimbal range in obsbot4linux's angles (pan positive = left, tilt positive = up). Measured on a
 /// Tiny 2 Lite: pan stops at about ±148, tilt reaches 90. Below -75 the camera goes to sleep
@@ -649,13 +646,16 @@ mod tests {
     }
 
     #[test]
-    fn zone_tracking_pair_matches_capture() {
-        let [a, b] = zone_tracking(true, 0x0194, 0x0195);
-        assert_captured(a, "aa2594010c00e15a0a04c408010027ff01");
-        assert_captured(b, "aa2595010c0080a50a048450010027ff01");
-        let [a, b] = zone_tracking(false, 0x0196, 0x0197);
-        assert_captured(a, "aa2596010c0040900a04c4080100e63f00");
-        assert_captured(b, "aa2597010c00216f0a0484500100e63f00");
+    fn zone_tracking_matches_capture() {
+        // the first frame of Center's pair (capture 11); the second, 0x5084, is not sent
+        assert_captured(
+            zone_tracking(true, 0x0194),
+            "aa2594010c00e15a0a04c408010027ff01",
+        );
+        assert_captured(
+            zone_tracking(false, 0x0196),
+            "aa2596010c0040900a04c4080100e63f00",
+        );
     }
 
     #[test]

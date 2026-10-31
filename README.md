@@ -235,7 +235,7 @@ for each id). Capability: `zone_views`.
 | `zone view save <name> [--pan P --tilt T --zoom Z]` | stores a view under the lowest free id (`0x1384`, then the name with `0x1544`); without a pose the current one is used (`0x0043` and `0x6804`). Name: 1-32 printable ASCII characters |
 | `zone view rename <id> <name>` | renames a view (`0x1544`) |
 | `zone view delete <id>` | deletes a view (`0x13c4`) |
-| `zone view go <id>` | moves the camera to the view (`0x1604`). Inferred from the firmware code, not tried on the camera: it moves like a preset recall, so it does not arm the zone Static flag but consumes one armed earlier (the camera then goes Static on arrival), and tracking may stay suspended afterwards because a view names no AI mode (see below) |
+| `zone view go <id>` | moves the camera to the view (`0x1604`). Measured on a Tiny 2 Lite: in static mode pan, tilt and zoom all moved (view at pan 10, tilt -5, zoom 1.0: pose read 10.0 / -5.0 after 3 s); in AI normal with the owner in view only the zoom changed, pan and tilt stayed with the person, and tracking stayed on. So it is a pose to go to while not tracking; use `tracking static` first for the full move. The effect on the zone Static flag is still inferred from the firmware code, see below |
 
 The daemon reads these seven values at start, after each command and then once a minute, not with
 every poll. Capability: `zone_return`.
@@ -387,7 +387,7 @@ after them was not run on the camera. The zone view commands (`0x1344`, `0x1384`
 is the one that matters: it runs through the same preset move as a recall (static analysis), so
 it does not arm the flag but consumes one that a recall or `0x6604` armed earlier, and the camera
 goes Static on arrival; afterwards tracking may stay suspended, since the view's actions name no
-AI mode, as with `startup go`. To be confirmed on the camera.
+AI mode, as with `startup go`. Not seen so far: tracking stayed on after a `zone view go` in AI normal. The flag part is still to be confirmed.
 
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist

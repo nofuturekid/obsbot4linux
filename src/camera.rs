@@ -19,8 +19,7 @@ use std::time::Duration;
 
 const REPLY_GAP: Duration = Duration::from_millis(50);
 const REPLY_ATTEMPTS: usize = 20;
-/// Gap between the two frames of a pair (zone tracking, preset delete): back to back the
-/// camera applies neither.
+/// Gap between the two frames of a pair (preset delete): back to back the camera applies neither.
 const PAIR_GAP: Duration = Duration::from_millis(100);
 
 /// Commands obsbot4linux supports, for the `capabilities` list of `status --json`.
@@ -802,7 +801,7 @@ impl Camera {
         self.framed(&cmd::hand_side(side, self.seq.next()))
     }
     pub fn set_zone_tracking(&self, on: bool) -> Result<()> {
-        self.pair(cmd::zone_tracking(on, self.seq.next(), self.seq.next()))
+        self.framed(&cmd::zone_tracking(on, self.seq.next()))
     }
 
     /// Zone area in obsbot4linux's angles (pan positive = left, tilt positive = up), converted to the
