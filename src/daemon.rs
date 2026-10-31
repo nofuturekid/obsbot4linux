@@ -142,6 +142,7 @@ impl Worker {
                 zone: full.zone.clone(),
                 hand: full.hand.clone(),
                 startup: full.state.startup,
+                framing: full.framing.clone(),
             };
             self.zone = Some((info, Instant::now()));
         }
@@ -268,6 +269,10 @@ impl Worker {
             Ok(status) => {
                 let status = serde_json::to_value(status).unwrap_or(Value::Null);
                 let status_changed = self.last.as_ref().map(|l| &l["status"]) != Some(&status);
+                // an AI mode change (a gesture, say) overwrites the framing options
+                if self.last.as_ref().map(|l| &l["status"]["ai_mode"]) != Some(&status["ai_mode"]) {
+                    self.zone = None;
+                }
                 if status_changed || self.last_full.elapsed() >= FULL_EVERY {
                     self.publish_full(Some(&cam), false);
                 } else {
@@ -585,6 +590,11 @@ mod tests {
             "--json led 2",
             "preset recall 1",
             "--json gimbal --pan 3",
+            "gimbal stop",
+            "gimbal center 0.3 0.4",
+            "zoom 2 --speed 30",
+            "framing size close-up",
+            "speed-mode auto",
         ] {
             assert!(!read_only(&parsed(line)), "{line}");
         }

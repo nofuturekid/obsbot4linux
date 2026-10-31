@@ -33,6 +33,14 @@ pub const CAPABILITIES: &[&str] = &[
     "exposure",
     "zoom",
     "gimbal",
+    "gimbal_speed",
+    "gimbal_rate",
+    "gimbal_stop",
+    "gimbal_center",
+    "zoom_speed",
+    "speed_mode",
+    "speed_headroom",
+    "framing",
     "fov",
     "led",
     "led_blink",
@@ -162,6 +170,8 @@ pub struct FullStatus {
     pub zone: Option<Zone>,
     /// Hand tracking area and return position read from the camera; None when it did not answer.
     pub hand: Option<Hand>,
+    /// Tracking speed mode and framing options read from the camera; None when it did not answer.
+    pub framing: Option<Framing>,
     pub capabilities: Vec<&'static str>,
     /// What `gimbal`, the poses and `zone area` accept, so clients need not hardcode it.
     pub limits: Limits,
@@ -227,12 +237,32 @@ pub struct HandArea {
     pub tilt_max: f32,
 }
 
+/// Framing options of the human tracking as the camera reports them (queries `0x0984`, `0x0a84`,
+/// `0x0b04`, `0x0b84`, `0x0c04`, `0x0c84`, `0x15c4`). An AI mode change overwrites most of them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Framing {
+    pub speed_mode: SpeedMode,
+    pub auto_zoom: bool,
+    pub size: FramingSize,
+    pub zoom_speed: AutoZoomSpeed,
+    /// Framing offset as a fraction of the frame (-0.16 to 0.16).
+    pub offset: Offset,
+    pub part_mode: PartMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Offset {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// The rarely changing readbacks; the daemon keeps them between full reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZoneInfo {
     pub zone: Option<Zone>,
     pub hand: Option<Hand>,
     pub startup: Option<Startup>,
+    pub framing: Option<Framing>,
 }
 
 /// What does not change while the camera stays connected; the daemon reads it once per connect.
@@ -276,6 +306,17 @@ fn manual_exposure(
 
 /// One sequence for the whole process, so frames from separate `Camera` handles (the daemon
 /// opens the device per operation) never repeat a number.
+/// The answer to 0x0b84 is the 0-2 the setter takes, but a camera that was never set reports its
+/// default as the speed itself, 10 (read back from a Tiny 2 Lite); 30 and 50 are the other two.
+fn auto_zoom_speed_reading(v: u8) -> Option<AutoZoomSpeed> {
+    match v {
+        0 | 10 => Some(AutoZoomSpeed::Slow),
+        1 | 30 => Some(AutoZoomSpeed::Medium),
+        2 | 50 => Some(AutoZoomSpeed::Fast),
+        _ => None,
+    }
+}
+
 fn sequence() -> &'static Sequence {
     static SEQ: OnceLock<Sequence> = OnceLock::new();
     SEQ.get_or_init(Sequence::new)
@@ -478,11 +519,38 @@ impl Camera {
         }
     }
 
+    /// Reads one byte of the answer to `command` (the framing options are all u8).
+    fn query_u8(&self, command: u16) -> Result<u8> {
+        self.query(command)?
+            .first()
+            .copied()
+            .ok_or(Error::NoAnswer(command))
+    }
+
+    /// The tracking speed mode and framing options (see [`Framing`]). An answer outside the
+    /// documented values counts as no answer.
+    pub fn framing(&self) -> Result<Framing> {
+        let byte = |command: u16| self.query_u8(command);
+        let bad = |command: u16| Error::NoAnswer(command);
+        Ok(Framing {
+            speed_mode: SpeedMode::from_u8(byte(0x0984)?).ok_or(bad(0x0984))?,
+            auto_zoom: byte(0x0a84)? != 0,
+            size: FramingSize::from_u8(byte(0x0b04)?).ok_or(bad(0x0b04))?,
+            zoom_speed: auto_zoom_speed_reading(byte(0x0b84)?).ok_or(bad(0x0b84))?,
+            offset: Offset {
+                x: self.query_f32(0x0c04)?,
+                y: self.query_f32(0x0c84)?,
+            },
+            part_mode: PartMode::from_u8(byte(0x15c4)?).ok_or(bad(0x15c4))?,
+        })
+    }
+
     pub fn zone_info(&self) -> ZoneInfo {
         ZoneInfo {
             zone: self.zone().ok(),
             hand: self.hand().ok(),
             startup: self.startup().ok(),
+            framing: self.framing().ok(),
         }
     }
 
@@ -522,6 +590,7 @@ impl Camera {
             zone,
             hand,
             startup,
+            framing,
         } = known.unwrap_or_else(|| self.zone_info());
         let Identity {
             firmware,
@@ -550,6 +619,7 @@ impl Camera {
             },
             zone,
             hand,
+            framing,
             capabilities: CAPABILITIES.to_vec(),
             limits: LIMITS,
         })
@@ -574,6 +644,42 @@ impl Camera {
     }
     pub fn set_tracking_speed(&self, speed: TrackingSpeed) -> Result<()> {
         self.framed(&cmd::tracking_speed(speed, self.seq.next()))
+    }
+    pub fn set_speed_mode(&self, mode: SpeedMode) -> Result<()> {
+        self.framed(&cmd::speed_mode(mode, self.seq.next()))
+    }
+    pub fn set_auto_zoom(&self, on: bool) -> Result<()> {
+        self.framed(&cmd::auto_zoom(on, self.seq.next()))
+    }
+    pub fn set_framing_size(&self, size: FramingSize) -> Result<()> {
+        self.framed(&cmd::framing_size(size, self.seq.next()))
+    }
+    pub fn set_auto_zoom_speed(&self, speed: AutoZoomSpeed) -> Result<()> {
+        self.framed(&cmd::auto_zoom_speed(speed, self.seq.next()))
+    }
+    pub fn set_part_mode(&self, mode: PartMode) -> Result<()> {
+        self.framed(&cmd::part_mode(mode, self.seq.next()))
+    }
+    /// Sets the framing offset; both frames are built before the first is sent.
+    pub fn set_framing_offset(&self, x: Option<f32>, y: Option<f32>) -> Result<()> {
+        if x.is_none() && y.is_none() {
+            return Err(Error::Invalid("give --x and/or --y".into()));
+        }
+        let frames = [
+            x.map(|x| cmd::framing_offset(false, x, self.seq.next()))
+                .transpose()?,
+            y.map(|y| cmd::framing_offset(true, y, self.seq.next()))
+                .transpose()?,
+        ];
+        let mut first = true;
+        for frame in frames.iter().flatten() {
+            if !first {
+                sleep(PAIR_GAP);
+            }
+            first = false;
+            self.framed(frame)?;
+        }
+        Ok(())
     }
     pub fn set_hdr(&self, on: bool) -> Result<()> {
         self.short(&cmd::hdr(on))
@@ -810,13 +916,65 @@ impl Camera {
     // --- gimbal and zoom ---
 
     /// Moves the gimbal to an absolute pose (degrees; pan positive to the camera's left,
-    /// tilt positive up). Switches AI tracking to static first.
-    pub fn gimbal(&self, pan: Option<f32>, tilt: Option<f32>) -> Result<()> {
+    /// tilt positive up). Switches AI tracking to static first. With `speed` (degrees per second)
+    /// the move takes as long as that speed needs instead of going as fast as the motors do.
+    pub fn gimbal(&self, pan: Option<f32>, tilt: Option<f32>, speed: Option<f32>) -> Result<()> {
         // build first so invalid input fails before anything is sent
-        let frame = cmd::gimbal_pose(pan, tilt.map(|t| -t + 0.0), self.seq.next())?;
+        let seq = self.seq.next();
+        let tilt_wire = tilt.map(|t| -t + 0.0);
+        let frame = match speed {
+            Some(s) => cmd::gimbal_pose_speed(pan, tilt_wire, s, seq)?,
+            None => cmd::gimbal_pose(pan, tilt_wire, seq)?,
+        };
         self.short(&cmd::ai_mode(AiMode::Static))?;
         self.framed(&frame)?;
         State::load().with_gimbal(pan, tilt).save()
+    }
+
+    /// Starts turning the gimbal (degrees per second, pan positive = camera left, tilt positive
+    /// = up) until `gimbal_stop` or a rate of 0. Switches AI tracking to static first.
+    pub fn gimbal_rate(&self, pan: f32, tilt: f32) -> Result<()> {
+        // the camera reverses the yaw of this command for mirror xor invert (neither is in the way
+        // `gimbal --pan` turns)
+        let (mirror, invert) = (self.status()?.mirror, self.tracking()?.invert);
+        let frame = cmd::gimbal_rate(pan, tilt, mirror, invert, self.seq.next())?;
+        self.short(&cmd::ai_mode(AiMode::Static))?;
+        self.framed(&frame)?;
+        self.forget_gimbal()
+    }
+
+    /// Stops all gimbal axes.
+    pub fn gimbal_stop(&self) -> Result<()> {
+        self.framed(&cmd::gimbal_stop(self.seq.next()))?;
+        self.forget_gimbal()
+    }
+
+    /// Turns the gimbal so that a point of the picture (x, y from 0.0 to 1.0, from the top left)
+    /// moves to the centre. Switches AI tracking to static first.
+    pub fn gimbal_center(&self, x: f32, y: f32) -> Result<()> {
+        let frame = cmd::view_center(x, y, self.seq.next())?;
+        self.short(&cmd::ai_mode(AiMode::Static))?;
+        self.framed(&frame)?;
+        self.forget_gimbal()
+    }
+
+    /// The remembered pose is no longer true after a move the camera worked out itself.
+    fn forget_gimbal(&self) -> Result<()> {
+        State {
+            gimbal: None,
+            ..State::load()
+        }
+        .save()
+    }
+
+    /// Zooms to a factor at a speed through the AI path (the UVC zoom control jumps).
+    pub fn zoom_to(&self, factor: f32, speed: i32) -> Result<()> {
+        self.framed(&cmd::zoom_to(speed, factor, self.seq.next())?)
+    }
+
+    /// Stops a zoom in progress.
+    pub fn zoom_stop(&self) -> Result<()> {
+        self.framed(&cmd::zoom_stop(self.seq.next()))
     }
 
     /// Sets the zoom factor (1.0-4.0) through UVC zoom_absolute.
@@ -1042,10 +1200,28 @@ mod full_status_tests {
             },
             zone: None,
             hand: None,
+            framing: Some(Framing {
+                speed_mode: SpeedMode::VeryFast,
+                auto_zoom: true,
+                size: FramingSize::MediumCloseUp,
+                zoom_speed: AutoZoomSpeed::Fast,
+                offset: Offset {
+                    x: 0.125,
+                    y: -0.0625,
+                },
+                part_mode: PartMode::HeadRemoval,
+            }),
             capabilities: CAPABILITIES.to_vec(),
             limits: LIMITS,
         };
         let v = serde_json::to_value(full).unwrap();
+        // the widget reads these names; they are the snake_case of the CLI names
+        assert_eq!(
+            v["framing"],
+            serde_json::json!({"speed_mode": "very_fast", "auto_zoom": true,
+                "size": "medium_close_up", "zoom_speed": "fast",
+                "offset": {"x": 0.125, "y": -0.0625}, "part_mode": "head_removal"})
+        );
         assert_eq!(v["model"], "Tiny 2 Lite");
         assert_eq!(v["device"], "/dev/v4l/by-id/x-video-index0");
         assert_eq!(v["streaming"], true);
@@ -1075,6 +1251,24 @@ mod full_status_tests {
         // the keys the widget already reads stay where they were
         assert_eq!(v["available"], true);
         assert!(v["status"].is_object() && v["capabilities"].is_array());
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::auto_zoom_speed_reading;
+    use crate::commands::AutoZoomSpeed;
+
+    #[test]
+    fn the_zoom_speed_is_read_as_index_or_as_the_default_speed() {
+        // a camera nobody set reports 10 (read back from a Tiny 2 Lite); after the setter the index
+        assert_eq!(auto_zoom_speed_reading(10), Some(AutoZoomSpeed::Slow));
+        assert_eq!(auto_zoom_speed_reading(0), Some(AutoZoomSpeed::Slow));
+        assert_eq!(auto_zoom_speed_reading(1), Some(AutoZoomSpeed::Medium));
+        assert_eq!(auto_zoom_speed_reading(30), Some(AutoZoomSpeed::Medium));
+        assert_eq!(auto_zoom_speed_reading(2), Some(AutoZoomSpeed::Fast));
+        assert_eq!(auto_zoom_speed_reading(50), Some(AutoZoomSpeed::Fast));
+        assert_eq!(auto_zoom_speed_reading(7), None);
     }
 }
 

@@ -57,6 +57,50 @@ pub enum WakeCmd {
     Mode { mode: AiMode },
 }
 
+#[derive(Subcommand)]
+pub enum GimbalCmd {
+    /// Stop all gimbal axes (also a `gimbal rate` still running)
+    Stop,
+    /// Turn the gimbal so that a point of the picture moves to its centre: x and y from 0.0 to
+    /// 1.0, from the top left (switches tracking to static first)
+    Center { x: f32, y: f32 },
+    /// Keep turning at a speed in degrees per second (up to 180) until `gimbal stop` or a speed
+    /// of 0, like the joystick of OBSBOT Center (switches tracking to static first)
+    Rate {
+        /// Positive turns the camera to its left
+        #[arg(long, allow_negative_numbers = true)]
+        pan: Option<f32>,
+        /// Positive tilts the camera up
+        #[arg(long, allow_negative_numbers = true)]
+        tilt: Option<f32>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ZoomCmd {
+    /// Stop a zoom in progress
+    Stop,
+}
+
+#[derive(Subcommand)]
+pub enum FramingCmd {
+    /// Auto zoom of the human tracking on or off
+    AutoZoom { state: OnOff },
+    /// Size of the auto zoom framing
+    Size { size: FramingSize },
+    /// How fast the auto zoom follows
+    ZoomSpeed { speed: AutoZoomSpeed },
+    /// Shift the framing by a fraction of the frame, -0.16 to 0.16
+    Offset {
+        #[arg(long, allow_negative_numbers = true)]
+        x: Option<f32>,
+        #[arg(long, allow_negative_numbers = true)]
+        y: Option<f32>,
+    },
+    /// Which part of the body the framing follows
+    Part { part: PartMode },
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum OnOff {
     On,
@@ -92,8 +136,14 @@ pub enum Cmd {
     },
     /// AI tracking mode
     Tracking { mode: AiMode },
-    /// Tracking speed
+    /// Tracking type: standard, sport (fixed fast gain) or headroom (more room above the head)
     Speed { speed: TrackingSpeed },
+    /// Fine tracking speed, from lazy to very-fast, or auto. Ignored while `speed sport` is set
+    /// or the part mode is not normal
+    SpeedMode { mode: SpeedMode },
+    /// Framing options of the human tracking; an AI mode change overwrites them
+    #[command(subcommand)]
+    Framing(FramingCmd),
     /// HDR
     Hdr { state: OnOff },
     /// Exposure: automatic metering over the whole picture (global) or on faces (face), or manual,
@@ -109,12 +159,20 @@ pub enum Cmd {
         #[arg(long)]
         gain: Option<i32>,
     },
-    /// Zoom factor 1.0-4.0
+    /// Zoom factor 1.0-4.0; with --speed the camera zooms smoothly instead of jumping
+    #[command(args_conflicts_with_subcommands = true)]
     Zoom {
         #[arg(allow_negative_numbers = true)]
-        factor: f32,
+        factor: Option<f32>,
+        /// Zoom speed (OBSBOT Center uses 30; the auto zoom 10, 30, 50)
+        #[arg(long, requires = "factor")]
+        speed: Option<i32>,
+        #[command(subcommand)]
+        stop: Option<ZoomCmd>,
     },
-    /// Move the gimbal to an absolute pose in degrees (switches tracking to static first)
+    /// Move the gimbal to an absolute pose in degrees (switches tracking to static first), or
+    /// `gimbal stop|center|rate`
+    #[command(args_conflicts_with_subcommands = true)]
     Gimbal {
         /// Positive turns the camera to its left
         #[arg(long, allow_negative_numbers = true)]
@@ -122,6 +180,12 @@ pub enum Cmd {
         /// Positive tilts the camera up
         #[arg(long, allow_negative_numbers = true)]
         tilt: Option<f32>,
+        /// Take as long as this many degrees per second (1-180) need instead of going as fast
+        /// as possible
+        #[arg(long)]
+        speed: Option<f32>,
+        #[command(subcommand)]
+        action: Option<GimbalCmd>,
     },
     /// Field of view (ignored by the camera while it sleeps)
     Fov { fov: FieldOfView },
@@ -382,6 +446,26 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
         Cmd::Speed { speed } => cam
             .set_tracking_speed(speed)
             .and_then(|_| done("speed", value_name(speed))),
+        Cmd::SpeedMode { mode } => cam
+            .set_speed_mode(mode)
+            .and_then(|_| done("speed_mode", value_name(mode))),
+        Cmd::Framing(f) => match f {
+            FramingCmd::AutoZoom { state } => cam
+                .set_auto_zoom(state.get())
+                .and_then(|_| done("framing_auto_zoom", json!(onoff(state.get())))),
+            FramingCmd::Size { size } => cam
+                .set_framing_size(size)
+                .and_then(|_| done("framing_size", value_name(size))),
+            FramingCmd::ZoomSpeed { speed } => cam
+                .set_auto_zoom_speed(speed)
+                .and_then(|_| done("framing_zoom_speed", value_name(speed))),
+            FramingCmd::Offset { x, y } => cam
+                .set_framing_offset(x, y)
+                .and_then(|_| done("framing_offset", json!({"x": x, "y": y}))),
+            FramingCmd::Part { part } => cam
+                .set_part_mode(part)
+                .and_then(|_| done("framing_part", value_name(part))),
+        },
         Cmd::Hdr { state } => cam
             .set_hdr(state.get())
             .and_then(|_| done("hdr", json!(onoff(state.get())))),
@@ -406,12 +490,49 @@ pub fn execute_with(cmd: Cmd, identity: Option<Identity>) -> Result<(Value, Stri
                 .set_exposure_mode(ExposureMode::Face)
                 .and_then(|_| done("exposure", json!("face"))),
         },
-        Cmd::Zoom { factor } => cam
+        Cmd::Zoom {
+            stop: Some(ZoomCmd::Stop),
+            ..
+        } => cam.zoom_stop().and_then(|_| done("zoom_stop", Value::Null)),
+        Cmd::Zoom {
+            factor: Some(factor),
+            speed: Some(speed),
+            ..
+        } => cam
+            .zoom_to(factor, speed)
+            .and_then(|_| done("zoom", json!({"factor": factor, "speed": speed}))),
+        Cmd::Zoom {
+            factor: Some(factor),
+            ..
+        } => cam
             .set_zoom(factor)
             .and_then(|_| done("zoom", json!(factor))),
-        Cmd::Gimbal { pan, tilt } => cam
-            .gimbal(pan, tilt)
-            .and_then(|_| done("gimbal", json!({"pan": pan, "tilt": tilt}))),
+        Cmd::Zoom { .. } => Err(Error::Invalid(
+            "give a zoom factor (with --speed to zoom smoothly), or `stop`".into(),
+        )),
+        Cmd::Gimbal {
+            action: Some(action),
+            ..
+        } => match action {
+            GimbalCmd::Stop => cam
+                .gimbal_stop()
+                .and_then(|_| done("gimbal_stop", Value::Null)),
+            GimbalCmd::Center { x, y } => cam
+                .gimbal_center(x, y)
+                .and_then(|_| done("gimbal_center", json!({"x": x, "y": y}))),
+            GimbalCmd::Rate { pan, tilt } => {
+                if pan.is_none() && tilt.is_none() {
+                    return Err(Error::Invalid("give --pan and/or --tilt".into()));
+                }
+                cam.gimbal_rate(pan.unwrap_or(0.0), tilt.unwrap_or(0.0))
+                    .and_then(|_| done("gimbal_rate", json!({"pan": pan, "tilt": tilt})))
+            }
+        },
+        Cmd::Gimbal {
+            pan, tilt, speed, ..
+        } => cam
+            .gimbal(pan, tilt, speed)
+            .and_then(|_| done("gimbal", json!({"pan": pan, "tilt": tilt, "speed": speed}))),
         Cmd::Fov { fov } => cam
             .set_field_of_view(fov)
             .and_then(|_| done("fov", value_name(fov))),
@@ -822,6 +943,116 @@ mod tests {
             }))
         ));
         assert!(parse("focus point 0.3 0.4").is_ok());
+    }
+
+    #[test]
+    fn gimbal_and_zoom_keep_their_syntax_and_gain_subcommands() {
+        // what the widget and scripts send today
+        assert!(matches!(
+            parse("gimbal --pan 10 --tilt -5"),
+            Ok(Cmd::Gimbal {
+                pan: Some(_),
+                tilt: Some(_),
+                speed: None,
+                action: None
+            })
+        ));
+        assert!(matches!(
+            parse("zoom 2.5"),
+            Ok(Cmd::Zoom {
+                factor: Some(_),
+                speed: None,
+                stop: None
+            })
+        ));
+        assert!(matches!(
+            parse("speed sport"),
+            Ok(Cmd::Speed {
+                speed: TrackingSpeed::Sport
+            })
+        ));
+        assert!(matches!(
+            parse("gimbal --pan 10 --speed 20"),
+            Ok(Cmd::Gimbal { speed: Some(_), .. })
+        ));
+        assert!(matches!(
+            parse("gimbal stop"),
+            Ok(Cmd::Gimbal {
+                action: Some(GimbalCmd::Stop),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse("gimbal center 0.3 0.4"),
+            Ok(Cmd::Gimbal {
+                action: Some(GimbalCmd::Center { .. }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse("gimbal rate --pan -5 --tilt 3"),
+            Ok(Cmd::Gimbal {
+                action: Some(GimbalCmd::Rate {
+                    pan: Some(_),
+                    tilt: Some(_)
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse("zoom 3 --speed 30"),
+            Ok(Cmd::Zoom {
+                speed: Some(30),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse("zoom stop"),
+            Ok(Cmd::Zoom {
+                stop: Some(ZoomCmd::Stop),
+                ..
+            })
+        ));
+        assert!(
+            parse("zoom --speed 30").is_err(),
+            "a speed without a factor"
+        );
+        // a pose and a subcommand are two different requests
+        assert!(parse("gimbal --pan 10 stop").is_err());
+        assert!(matches!(
+            parse("speed headroom"),
+            Ok(Cmd::Speed {
+                speed: TrackingSpeed::Headroom
+            })
+        ));
+    }
+
+    #[test]
+    fn framing_commands_parse() {
+        assert!(matches!(
+            parse("speed-mode very-fast"),
+            Ok(Cmd::SpeedMode {
+                mode: SpeedMode::VeryFast
+            })
+        ));
+        assert!(parse("speed-mode turbo").is_err());
+        assert!(matches!(
+            parse("framing size medium-close-up"),
+            Ok(Cmd::Framing(FramingCmd::Size {
+                size: FramingSize::MediumCloseUp
+            }))
+        ));
+        assert!(matches!(
+            parse("framing offset --x -0.1 --y 0.05"),
+            Ok(Cmd::Framing(FramingCmd::Offset {
+                x: Some(_),
+                y: Some(_)
+            }))
+        ));
+        assert!(parse("framing auto-zoom on").is_ok());
+        assert!(parse("framing zoom-speed slow").is_ok());
+        assert!(parse("framing part lower-body").is_ok());
+        assert!(parse("framing part feet").is_err());
     }
 
     #[test]

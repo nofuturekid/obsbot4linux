@@ -39,7 +39,7 @@ All control goes through ioctls on the camera's video node, as detection finds i
 else the first `/dev/videoN` with a matching V4L2 card name; with several supported cameras
 connected, the first one found. The ioctls reach the vendor extension unit (framed commands,
 queries, status block) and the UVC camera terminal (image controls). The gimbal moves with
-OBSBOT Center's pose command `0x6444`, not the UVC pan/tilt control, which ignores a target
+OBSBOT Center's pose command `0x6444` (or its speed variant, see [Gimbal and zoom moves](#gimbal-and-zoom-moves)), not the UVC pan/tilt control, which ignores a target
 near the centre while the gimbal is further away. What the camera does not report (the last
 pose sent, the exposure mode) the daemon remembers.
 
@@ -251,6 +251,90 @@ each side and 30 up and down).
 
 The daemon reads the two values together with the zone values (see above). Capability:
 `hand_return`.
+
+### Gimbal and zoom moves
+
+`gimbal --pan P --tilt T` is unchanged (command `0x6444`, joint angles, as fast as the motors go,
+tracking switched to static first). New, all of them switch tracking to static first except `stop`:
+
+| Command | Does | Capability |
+| --- | --- | --- |
+| `gimbal --pan P --tilt T --speed S` | the same move at S degrees per second on each axis (1-180, command `0x6544`). Arrives at the pose (pan 20 / tilt 10 at 5 deg/s took 4 s and read back 20.0 / 10.0) | `gimbal_speed` |
+| `gimbal rate --pan R --tilt R` | keeps turning at R degrees per second (up to 180, positive = the way `--pan` / `--tilt` go) until `gimbal stop` or a rate of 0, like the joystick of OBSBOT Center (`0x6484`). One request starts it, **it does not stop on its own**: a client that dies leaves the gimbal turning to its end (and tilting below -75 sends the camera to sleep). The camera reverses the yaw of this command when exactly one of mirror and invert is on; obsbot4linux reads both and undoes it, so `--pan 5` always raises `pose.pan` | `gimbal_rate` |
+| `gimbal stop` | stops all axes (`0x6704`); does not change the AI mode | `gimbal_stop` |
+| `gimbal center X Y` | turns the gimbal so that the point X, Y (0.0-1.0 from the top left) of the picture moves to the centre (`0x0544`). **Only half works on a Tiny 2 Lite**, see below | `gimbal_center` |
+| `zoom F --speed S` | zooms smoothly to F (1.0-4.0) instead of jumping (`0x6884`); OBSBOT Center sends S = 30; 10 was clearly slower (about 2 s for 1.0 to 2.0) and 50 faster (about 1 s for 2.0 to 1.0) | `zoom_speed` |
+| `zoom stop` | stops a zoom in progress (`0x68c4`) | `zoom_speed` |
+
+`gimbal center` moved the gimbal in a Tiny 2 Lite only for points left of the centre (x below 0.5,
+pan went negative, 0.3 gave -16 degrees, 0.0 gave -40 degrees, i.e. about 80 degrees across the
+picture) and below it (y above 0.5, tilt went negative, 0.7 gave -10.8 degrees, about 54 degrees
+across). For points right of the centre or above it the camera did not make the move (pan crept by
+0.1-0.25 degrees per second in that direction, tilt up from the centre did nothing for 0.3 and
+worked for 0.0); mirror and invert changed nothing. The cause is not known, so do not build a
+click-to-centre on it yet. Not tried while AI tracking runs: the command switches to static first.
+
+The pose that `0x0043` reports (bytes 6-11, what `status.pose` shows) is the joint angle that
+`0x6444` sets, so moves and read-back match; the first six bytes are a second angle triple (by the
+firmware notes the world frame) that read 1.4 / 11.5 / -45.8 degrees at the joint pose 0 / 0, and
+are not read. The world-frame (Euler) variants `0x6404`, `0x6504`, `0x6584`
+are therefore not exposed. The timed moves `0x65c4` / `0x6584` (arrive in N ms) have two 32-bit
+words after the time that nobody knows; with 0 and 1 in every combination the camera did not move
+(`0x6584` only with 0, 0), so they are not exposed either, nor is `0x64c4` (speed for N ms, same
+words, not tried). `0x6484`, `0x6544`, `0x6704`, `0x6884`, `0x68c4` and
+`0x0544` do not arm the zone Static flag (below).
+
+### Tracking speed and framing
+
+`speed standard|sport|headroom` is the vertical tracking type (`0x0cc4`, read back as
+`status.tracking_speed`): `headroom` is the third value, a different vertical framing; only `sport`
+fixes the tracking gain. `speed-mode lazy|slow|normal|fast|very-fast|auto` (`0x0944`) is the finer
+speed of the tracking itself; it has no effect while `speed sport` is set or the part mode is not
+`normal`. Gains are 0.25 / 0.5 / 0.75 / 1.0 / 1.25 for `lazy` to `very-fast`, `auto` adapts (static
+analysis, the effect on the tracking was not measured). `framing` has the options the AI modes are
+made of:
+
+| Command | Does |
+| --- | --- |
+| `framing auto-zoom on\|off` | auto zoom of the human tracking (`0x0a44`) |
+| `framing size long-shot\|medium-long-shot\|medium-shot\|medium-close-up\|close-up\|big-close-up` | auto zoom size (`0x0ac4`); the AI modes use `medium-shot` and `medium-close-up` |
+| `framing zoom-speed slow\|medium\|fast` | how fast the auto zoom follows (`0x0b44`) |
+| `framing offset --x X --y Y` | shifts the framing by a fraction of the frame, -0.16 to 0.16, either or both (`0x0bc4` / `0x0c44`; the camera clamps larger values, so they are refused). Which way positive goes was not checked |
+| `framing part normal\|head-removal\|lower-body` | which part of the body is framed (`0x1584`) |
+
+`status.framing` (queries `0x0984`, `0x0a84`, `0x0b04`, `0x0b84`, `0x0c04`, `0x0c84`, `0x15c4`) reads
+them back; it is `null` when the camera does not answer:
+
+```json
+{
+  "framing": {
+    "speed_mode": "auto",
+    "auto_zoom": false,
+    "size": "long_shot",
+    "zoom_speed": "slow",
+    "offset": { "x": 0.0, "y": 0.0 },
+    "part_mode": "normal"
+  }
+}
+```
+
+Every option is read back as set. A change of the AI mode overwrites some of them (read back:
+`tracking upper-body` set auto zoom on and the size to `medium_shot`, `tracking headless` set auto
+zoom off and the part mode to `head_removal`, and `tracking static` left both as they were), but
+not `speed_mode`, the offset or the zoom speed. The daemon reads them with the zone values (after
+each command, on an AI mode change and then once a minute). A camera that was never set reports
+the zoom speed as 10; it reads back as `slow`, like 0. Capabilities: `speed_mode`,
+`speed_headroom`, `framing`.
+
+### Commands that arm the zone Static flag
+
+A preset recall (`0x39c4`), `0x3904`, `0x3dc4` and `0x6604` make the next zone tracking return go
+Static (see [Zone tracking and start pose](#zone-tracking-and-start-pose)). The flag is armed by
+the command id alone, for the ranges `0x39c0`-`0x39ff`, `0x3dc0`-`0x3dff`, `0x6600`-`0x663f` and
+`0x3900`-`0x393f` (static analysis of the camera's host process). None of the commands in this
+section is in them (`0x0544`, `0x0944`, `0x0a44`, `0x0ac4`, `0x0b44`, `0x0bc4`, `0x0c44`, `0x1584`,
+`0x6484`, `0x6544`, `0x6704`, `0x6884`, `0x68c4`, nor the read-back queries); a zone tracking return
+after them was not run on the camera.
 
 Adding a model: an entry in `MODELS` in `src/models.rs` (name, USB id, by-id and card name
 patterns) makes it detected. Its commands and status decoding differ per camera and today exist
