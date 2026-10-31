@@ -4,7 +4,7 @@
 //! every client are serialised and sequence numbers stay unique), executes requests with the
 //! CLI's own argument parser and polls the camera to notice changes it makes itself.
 
-use crate::cli::{Cli, Cmd, PresetCmd, execute_with};
+use crate::cli::{Cli, Cmd, GimbalCmd, PresetCmd, ZoomCmd, execute_with};
 use crate::proto::{Hub, Request, Response, socket_path};
 use clap::Parser;
 use nix::errno::Errno;
@@ -54,6 +54,21 @@ fn parse_request(args: &[String]) -> std::result::Result<Cmd, String> {
 /// Commands that only read: they neither drop the zone cache nor cause a re-read and an event.
 fn read_only(cmd: &Cmd) -> bool {
     matches!(cmd, Cmd::Status | Cmd::Preset(PresetCmd::List))
+}
+
+/// Stops change no setting: the zone readbacks stay, so a stop is not queued behind a long full
+/// read.
+fn keeps_zone_cache(cmd: &Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::Gimbal {
+            action: Some(GimbalCmd::Stop),
+            ..
+        } | Cmd::Zoom {
+            stop: Some(ZoomCmd::Stop),
+            ..
+        }
+    )
 }
 
 /// Which connections want the live pose. It belongs to the connection, not to the camera: a
@@ -142,6 +157,7 @@ impl Worker {
                 zone: full.zone.clone(),
                 hand: full.hand.clone(),
                 startup: full.state.startup,
+                framing: full.framing.clone(),
             };
             self.zone = Some((info, Instant::now()));
         }
@@ -268,6 +284,10 @@ impl Worker {
             Ok(status) => {
                 let status = serde_json::to_value(status).unwrap_or(Value::Null);
                 let status_changed = self.last.as_ref().map(|l| &l["status"]) != Some(&status);
+                // an AI mode change (a gesture, say) overwrites the framing options
+                if self.last.as_ref().map(|l| &l["status"]["ai_mode"]) != Some(&status["ai_mode"]) {
+                    self.zone = None;
+                }
                 if status_changed || self.last_full.elapsed() >= FULL_EVERY {
                     self.publish_full(Some(&cam), false);
                 } else {
@@ -289,20 +309,24 @@ impl Worker {
             match jobs.recv_timeout(wait) {
                 Ok(job) => {
                     // from the parsed command: argv can start with a global flag (--json status)
-                    let (result, changes) = match parse_request(&job.args) {
+                    let (result, changes, keep_zone) = match parse_request(&job.args) {
                         Ok(cmd) => {
                             let changes = !read_only(&cmd);
+                            let keep_zone = keeps_zone_cache(&cmd);
                             (
                                 execute_with(cmd, self.identity.clone()).map_err(|e| e.to_string()),
                                 changes,
+                                keep_zone,
                             )
                         }
-                        Err(e) => (Err(e), false),
+                        Err(e) => (Err(e), false, false),
                     };
                     let changed = changes && result.is_ok();
                     let _ = job.reply.send(result);
                     if changed {
-                        self.zone = None;
+                        if !keep_zone {
+                            self.zone = None;
+                        }
                         self.publish_quick();
                     }
                 }
@@ -585,10 +609,26 @@ mod tests {
             "--json led 2",
             "preset recall 1",
             "--json gimbal --pan 3",
+            "gimbal stop",
+            "gimbal center 0.3 0.4",
+            "zoom 2 --speed 30",
+            "framing size close-up",
+            "speed-mode auto",
         ] {
             assert!(!read_only(&parsed(line)), "{line}");
         }
         assert!(parse_request(&["--json".into(), "watch".into()]).is_err());
+    }
+
+    #[test]
+    fn stops_keep_the_zone_cache_other_moves_drop_it() {
+        for line in ["gimbal stop", "zoom stop", "--json gimbal stop"] {
+            let cmd = parsed(line);
+            assert!(keeps_zone_cache(&cmd) && !read_only(&cmd), "{line}");
+        }
+        for line in ["gimbal --pan 1", "gimbal rate --pan 1", "zoom 2", "led 1"] {
+            assert!(!keeps_zone_cache(&parsed(line)), "{line}");
+        }
     }
 
     #[test]

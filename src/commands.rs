@@ -31,7 +31,39 @@ macro_rules! setting {
 setting!(FieldOfView { Wide = 0, Medium = 1, Narrow = 2 });
 setting!(NoiseReduction { Off = 0, Weak = 1, Medium = 2, Strong = 3 });
 setting!(PickupDistance { Near = 0, Standard = 1, Far = 2 });
-setting!(TrackingSpeed { Standard = 0, Sport = 2 });
+setting!(
+    /// Vertical tracking type (command 0x0cc4): `standard` and `sport` are the two OBSBOT Center
+    /// offers; `headroom` leaves more room above the head. Only `sport` fixes the tracking gain
+    /// (1.0) and so overrides `speed-mode`.
+    TrackingSpeed { Standard = 0, Headroom = 1, Sport = 2 }
+);
+setting!(
+    /// Fine tracking speed (command 0x0944, query 0x0984): the gain of the pan controller is
+    /// 0.25 / 0.5 / 0.75 / 1.0 / 1.25 for the first five; `auto` adapts it. Ignored while the
+    /// tracking type is `sport` or the part mode is not `normal`.
+    SpeedMode { Lazy = 0, Slow = 1, Normal = 2, Fast = 3, VeryFast = 4, Auto = 5 }
+);
+setting!(
+    /// Size of the auto zoom framing (command 0x0ac4, query 0x0b04). The AI modes upper body and
+    /// close-up use `medium_shot` and `medium_close_up`.
+    FramingSize {
+        LongShot = 0,
+        MediumLongShot = 1,
+        MediumShot = 2,
+        MediumCloseUp = 3,
+        CloseUp = 4,
+        BigCloseUp = 5,
+    }
+);
+setting!(
+    /// How fast the auto zoom follows (command 0x0b44, query 0x0b84).
+    AutoZoomSpeed { Slow = 0, Medium = 1, Fast = 2 }
+);
+setting!(
+    /// Which part of the body the framing follows (command 0x1584, query 0x15c4); the AI modes
+    /// headless and lower body write the same field.
+    PartMode { Normal = 0, HeadRemoval = 1, LowerBody = 2 }
+);
 setting!(SleepBackground { Black = 0, Image = 1 });
 setting!(HandSide { Right = 0, Left = 1 });
 setting!(
@@ -325,10 +357,13 @@ pub fn sleep(asleep: bool, seq: u16) -> [u8; FRAME_SIZE] {
 pub fn factory_reset(seq: u16) -> [u8; FRAME_SIZE] {
     frame(POWER, 0xa802, &[0x01], seq)
 }
-/// Moves the gimbal with OBSBOT Center's pose command 0x6444. Degrees; yaw positive turns
-/// the camera to its left, pitch positive tilts it down; None keeps that axis.
-pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8; FRAME_SIZE]> {
-    const KEEP: f32 = -1000.0;
+/// -1000 on the wire (any value from 179 up) keeps that axis where it is.
+const KEEP: f32 = -1000.0;
+
+/// The three targets (roll, pitch, yaw) of the pose commands; checked, so that a value the camera
+/// would ignore does not report success. Yaw positive turns the camera to its left, pitch
+/// positive tilts it down; None keeps that axis.
+fn pose_targets(yaw: Option<f32>, pitch: Option<f32>) -> Result<[f32; 3]> {
     if yaw.is_none() && pitch.is_none()
         || !gimbal_angles_ok(yaw.unwrap_or(0.0), pitch.map_or(0.0, |p| -p))
     {
@@ -336,11 +371,140 @@ pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8
             "gimbal pose needs pan -150..150 and/or tilt -70..90",
         ));
     }
-    let mut data = Vec::with_capacity(12);
-    for v in [KEEP, pitch.unwrap_or(KEEP), yaw.unwrap_or(KEEP)] {
-        data.extend_from_slice(&v.to_le_bytes());
+    Ok([KEEP, pitch.unwrap_or(KEEP), yaw.unwrap_or(KEEP)])
+}
+
+fn f32s(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// Moves the gimbal with OBSBOT Center's pose command 0x6444 (joint angles, as fast as the motors
+/// go). Degrees; yaw positive turns the camera to its left, pitch positive tilts it down; None
+/// keeps that axis.
+pub fn gimbal_pose(yaw: Option<f32>, pitch: Option<f32>, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    Ok(frame(
+        TRACKING,
+        0x6444,
+        &f32s(&pose_targets(yaw, pitch)?),
+        seq,
+    ))
+}
+
+/// Slowest and fastest speed of a gimbal move in degrees per second: the gimbal controller caps
+/// every axis at 180.
+pub const GIMBAL_SPEED_MIN: f32 = 1.0;
+pub const GIMBAL_SPEED_MAX: f32 = 180.0;
+/// Fastest rate of `gimbal rate`: 0x6484 leaves an axis alone from |v| = 179 up (like the
+/// pose commands), so it would report success without turning.
+pub const GIMBAL_RATE_MAX: f32 = 178.0;
+
+/// Like [`gimbal_pose`], at `speed` degrees per second (0x6544, joint angles): three speeds, then
+/// the three targets.
+pub fn gimbal_pose_speed(
+    yaw: Option<f32>,
+    pitch: Option<f32>,
+    speed: f32,
+    seq: u16,
+) -> Result<[u8; FRAME_SIZE]> {
+    if !(GIMBAL_SPEED_MIN..=GIMBAL_SPEED_MAX).contains(&speed) {
+        return Err(invalid("gimbal speed is 1-180 degrees per second"));
     }
-    Ok(frame(TRACKING, 0x6444, &data, seq))
+    let mut data = f32s(&[speed; 3]);
+    data.extend(f32s(&pose_targets(yaw, pitch)?));
+    Ok(frame(TRACKING, 0x6544, &data, seq))
+}
+
+/// Turns the gimbal at a speed in degrees per second, like OBSBOT Center's joystick (0x6484: roll,
+/// pitch, yaw). `pan` and `tilt` are obsbot4linux's directions (pan positive = the way `gimbal
+/// --pan` turns, tilt positive = up), 0 stops that axis. It keeps turning until a speed of 0 or
+/// [`gimbal_stop`]. The camera flips the yaw of this command when exactly one of mirror and
+/// invert is on (measured), which is undone here.
+pub fn gimbal_rate(
+    pan: f32,
+    tilt: f32,
+    mirror: bool,
+    invert: bool,
+    seq: u16,
+) -> Result<[u8; FRAME_SIZE]> {
+    if ![pan, tilt]
+        .iter()
+        .all(|v| v.is_finite() && v.abs() <= GIMBAL_RATE_MAX)
+    {
+        return Err(invalid("gimbal rate is -178 to 178 degrees per second"));
+    }
+    // measured: with mirror and invert off, a positive yaw speed lowers the pose's pan
+    let yaw = if mirror != invert { pan } else { -pan } + 0.0;
+    Ok(frame(
+        TRACKING,
+        0x6484,
+        &f32s(&[0.0, -tilt + 0.0, yaw]),
+        seq,
+    ))
+}
+
+/// Stops all gimbal axes (0x6704, no data).
+pub fn gimbal_stop(seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x6704, &[], seq)
+}
+
+/// Turns the gimbal so that a point of the picture moves to its centre (0x0544, libdev
+/// `aiSetVideoCenter`): x and y from 0.0 to 1.0, from the top left.
+pub fn view_center(x: f32, y: f32, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err(invalid("centre point x and y are 0.0-1.0"));
+    }
+    Ok(frame(TRACKING, 0x0544, &f32s(&[x, y]), seq))
+}
+
+/// Zoom to a factor at a speed (0x6884: i32 speed, f32 ratio; OBSBOT Center sends 30), the camera
+/// clamps the ratio to its range. The speed is the one of the auto zoom (10 slow, 30 medium, 50
+/// fast).
+pub fn zoom_to(speed: i32, ratio: f32, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !(1.0..=4.0).contains(&ratio) {
+        return Err(invalid("zoom factor is 1.0-4.0"));
+    }
+    if speed < 1 {
+        return Err(invalid("zoom speed must be positive"));
+    }
+    let mut data = speed.to_le_bytes().to_vec();
+    data.extend_from_slice(&ratio.to_le_bytes());
+    Ok(frame(TRACKING, 0x6884, &data, seq))
+}
+
+/// Stops a zoom in progress (0x68c4, no data).
+pub fn zoom_stop(seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x68c4, &[], seq)
+}
+
+// --- tracking speed and framing (receiver 4, all of them stored in the camera's human tracking
+// options; an AI mode change overwrites the ones it also sets) ---
+
+pub fn speed_mode(mode: SpeedMode, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x0944, &[mode.to_u8()], seq)
+}
+pub fn auto_zoom(on: bool, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x0a44, &[on as u8], seq)
+}
+pub fn framing_size(size: FramingSize, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x0ac4, &[size.to_u8()], seq)
+}
+pub fn auto_zoom_speed(speed: AutoZoomSpeed, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x0b44, &[speed.to_u8()], seq)
+}
+pub fn part_mode(mode: PartMode, seq: u16) -> [u8; FRAME_SIZE] {
+    frame(TRACKING, 0x1584, &[mode.to_u8()], seq)
+}
+/// The camera clamps the framing offset to this fraction of the frame; a larger value is refused
+/// here, so that the read-back is what was asked for.
+pub const FRAMING_OFFSET_MAX: f32 = 0.16;
+/// Horizontal (0x0bc4) or vertical (0x0c44) framing offset as a fraction of the frame, positive
+/// is right / down in the picture.
+pub fn framing_offset(vertical: bool, offset: f32, seq: u16) -> Result<[u8; FRAME_SIZE]> {
+    if !(-FRAMING_OFFSET_MAX..=FRAMING_OFFSET_MAX).contains(&offset) {
+        return Err(invalid("framing offset is -0.16 to 0.16 of the frame"));
+    }
+    let command = if vertical { 0x0c44 } else { 0x0bc4 };
+    Ok(frame(TRACKING, command, &offset.to_le_bytes(), seq))
 }
 
 #[cfg(test)]
@@ -545,6 +709,137 @@ mod tests {
         assert!(gimbal_pose(None, Some(f32::INFINITY), 0).is_err());
         assert!(gimbal_pose(Some(150.0), Some(-90.0), 0).is_ok());
         assert!(gimbal_pose(Some(-150.0), Some(70.0), 0).is_ok());
+    }
+
+    /// Frames of commands OBSBOT Center never sends, built independently (CRC-16/USB computed in
+    /// Python); the effect of each was read back from a Tiny 2 Lite on firmware 6.2.8.1.
+    #[test]
+    fn framing_frames_hold_what_the_camera_read_back() {
+        assert_captured(
+            speed_mode(SpeedMode::VeryFast, 0x30),
+            "aa2530000c000b9d0a0444090100e7fc04",
+        );
+        assert_captured(auto_zoom(true, 0x31), "aa2531000c001a590a04440a010027ff01");
+        assert_captured(
+            framing_size(FramingSize::BigCloseUp, 0x32),
+            "aa2532000c008b960a04c40a0100263c05",
+        );
+        assert_captured(
+            auto_zoom_speed(AutoZoomSpeed::Fast, 0x33),
+            "aa2533000c007a530a04440b010067fe02",
+        );
+        assert_captured(
+            part_mode(PartMode::LowerBody, 0x34),
+            "aa2534000c001b810a048415010067fe02",
+        );
+        assert_captured(
+            framing_offset(false, 0.1, 0x35).unwrap(),
+            "aa2535000c00fb8c0a04c40b0400d445cdcccc3d",
+        );
+        assert_captured(
+            framing_offset(true, -0.05, 0x36).unwrap(),
+            "aa2536000c002b810a04440c0400b425cdcc4cbd",
+        );
+    }
+
+    #[test]
+    fn framing_offset_is_refused_beyond_what_the_camera_clamps() {
+        // the camera would clamp 0.2 to 0.16 and report success for something else
+        assert!(framing_offset(false, 0.16, 0).is_ok());
+        assert!(framing_offset(true, -0.16, 0).is_ok());
+        assert!(framing_offset(false, 0.17, 0).is_err());
+        assert!(framing_offset(true, -0.17, 0).is_err());
+        assert!(framing_offset(false, f32::NAN, 0).is_err());
+    }
+
+    #[test]
+    fn tracking_speed_names_match_the_camera_values() {
+        // 0x0cc4: 0 standard, 1 headroom, 2 sport (read back from 0x0d04); status byte 0x24 follows
+        assert_eq!(TrackingSpeed::Headroom.to_u8(), 1);
+        assert_eq!(TrackingSpeed::from_u8(1), Some(TrackingSpeed::Headroom));
+        assert_eq!(TrackingSpeed::from_u8(3), None);
+        assert_captured(
+            tracking_speed(TrackingSpeed::Headroom, 0x40),
+            "aa2540000c00a8750a04c40c010027ff01",
+        );
+    }
+
+    /// The only captured frames of the milestone: Center's joystick (0x6484, capture 10, seq 272)
+    /// and its zoom to 1.0 at speed 30 (0x6884, capture 11, seq 377).
+    #[test]
+    fn joystick_and_zoom_speed_match_capture() {
+        // Center's roll 0, pitch -0.6775, yaw -0.1693; obsbot4linux's pan is the yaw negated while
+        // mirror and invert are both off, tilt the pitch negated
+        let pan = -f32::from_bits(0xbe2d_8f30);
+        let tilt = -f32::from_bits(0xbf2d_8f30);
+        assert_captured(
+            gimbal_rate(pan, tilt, false, false, 272).unwrap(),
+            "aa2510010c00968a0a0484640c0089bb00000000308f2dbf308f2dbe",
+        );
+        assert_captured(
+            zoom_to(30, 1.0, 377).unwrap(),
+            "aa2579010c00451e0a0484680800db721e0000000000803f",
+        );
+    }
+
+    #[test]
+    fn gimbal_rate_undoes_the_cameras_mirror_and_invert_flip() {
+        // measured: the camera turns the yaw of 0x6484 around when exactly one of them is on
+        let yaw = |mirror, invert| {
+            let f = gimbal_rate(5.0, 3.0, mirror, invert, 0).unwrap();
+            f32::from_le_bytes(f[16 + 8..16 + 12].try_into().unwrap())
+        };
+        assert_eq!(yaw(false, false), -5.0);
+        assert_eq!(yaw(true, true), -5.0);
+        assert_eq!(yaw(true, false), 5.0);
+        assert_eq!(yaw(false, true), 5.0);
+        // tilt never flips: pitch is down positive on the wire
+        let f = gimbal_rate(0.0, 3.0, true, false, 0).unwrap();
+        assert_eq!(
+            f32::from_le_bytes(f[16 + 4..16 + 8].try_into().unwrap()),
+            -3.0
+        );
+        assert!(gimbal_rate(178.0, -178.0, false, false, 0).is_ok());
+        // 179 and up is "keep this axis" on the wire: success without a move
+        assert!(gimbal_rate(179.0, 0.0, false, false, 0).is_err());
+        assert!(gimbal_rate(0.0, -179.0, false, false, 0).is_err());
+        assert!(gimbal_rate(181.0, 0.0, false, false, 0).is_err());
+        assert!(gimbal_rate(0.0, f32::NAN, false, false, 0).is_err());
+    }
+
+    #[test]
+    fn moves_with_speed_hold_what_the_gimbal_did() {
+        // pan 20 / tilt 10 at 5 deg/s arrived at 20.0 / 10.0 after 4 s (pitch is down positive)
+        assert_captured(
+            gimbal_pose_speed(Some(20.0), Some(-10.0), 5.0, 0x3a).unwrap(),
+            "aa253a000c002b900a044465180005ba0000a0400000a0400000a04000007ac4000020c10000a041",
+        );
+        assert_captured(
+            gimbal_pose_speed(Some(-30.0), None, 40.0, 0x3b).unwrap(),
+            "aa253b000c007a550a04446518005de000002042000020420000204200007ac400007ac40000f0c1",
+        );
+        assert!(gimbal_pose_speed(Some(1.0), None, 0.5, 0).is_err());
+        assert!(gimbal_pose_speed(Some(1.0), None, 181.0, 0).is_err());
+        assert!(gimbal_pose_speed(None, None, 5.0, 0).is_err(), "no axis");
+        assert!(gimbal_pose_speed(Some(151.0), None, 5.0, 0).is_err());
+    }
+
+    #[test]
+    fn stop_and_centre_frames() {
+        assert_captured(gimbal_stop(0x38), "aa2538000c003a5b0a0404670000ffdb");
+        assert_captured(zoom_stop(0x39), "aa2539000c007b9a0a04c4680000ffdb");
+        assert_captured(
+            view_center(0.3, 0.4, 0x37).unwrap(),
+            "aa2537000c00ba420a0444050800e4779a99993ecdcccc3e",
+        );
+        assert!(view_center(1.1, 0.5, 0).is_err());
+        assert!(view_center(0.5, -0.1, 0).is_err());
+        assert!(view_center(f32::NAN, 0.5, 0).is_err());
+        assert_captured(
+            zoom_to(30, 2.5, 0x3c).unwrap(),
+            "aa253c000c005a4a0a0484680800e2921e00000000002040",
+        );
+        assert!(zoom_to(30, 4.5, 0).is_err() && zoom_to(0, 2.0, 0).is_err());
     }
 
     #[test]
