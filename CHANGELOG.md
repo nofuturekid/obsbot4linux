@@ -5,6 +5,8 @@ All notable changes to OBSBot4Linux. The format follows
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-31
+
 ### Fixed
 
 - `wake mode` sets the tracking mode at power-on, not on waking from sleep; `wake zoom` had no
