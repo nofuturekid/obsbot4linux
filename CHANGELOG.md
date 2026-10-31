@@ -21,6 +21,8 @@ All notable changes to OBSBot4Linux. The format follows
   `focus point <x> <y>` focuses once on a point (`0x3582`); `status` has `focus` with the mode,
   the manual position and the focus window (query `0x3642`). Capabilities `focus_af_mode`,
   `focus_point` (#88).
+- `image exposure_time` is refused unless the exposure is manual, since a shutter time sent in
+  automatic exposure freezes it; the error points to `exposure manual --time`.
 
 ## [0.9.0] - 2026-10-31
 

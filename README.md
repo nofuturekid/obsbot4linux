@@ -162,9 +162,16 @@ accept, as [min, max] (pan positive = camera left, tilt positive = up):
 
 `focus` in the status (query `0x3642`) reads `{"mode": "continuous", "position": 0, "point": [0.5, 0.5]}`:
 the autofocus mode (`continuous`, `single`, `manual`), the manual position 0-100 (kept in the other
-modes) and the centre of the focus window. Like `audio_volume` it is `null` while the camera sleeps or
-does not answer. The camera does not acknowledge these set commands, so a refused value only shows
-as an unchanged readback.
+modes; `null` if the camera reports something else) and the centre of the focus window. `focus` and
+`audio_volume` are `null` while the camera sleeps or did not answer the query. The focus commands
+and their readback worked on a Tiny 2 Lite with and without a video stream running (the firmware
+code mentions a "media busy" error without a pipeline; not seen). The camera does not acknowledge
+these set commands, so a refused value only shows as an unchanged readback. A query the camera
+leaves unanswered costs up to a second per full status read (every 5 s at most); this is not
+backed off.
+
+`image exposure_time` is refused unless the exposure is manual (a shutter time sent in automatic
+exposure freezes it); use `exposure manual --time`.
 
 ### Zone tracking and start pose
 

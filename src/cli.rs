@@ -97,7 +97,8 @@ pub enum Cmd {
     /// HDR
     Hdr { state: OnOff },
     /// Exposure: automatic metering over the whole picture (global) or on faces (face), or manual,
-    /// optionally with the shutter time and gain (`image exposure_time` / `image gain` set them too)
+    /// optionally with the shutter time and gain (`image gain` sets the gain too; `image exposure_time`
+    /// is refused unless the exposure is already manual)
     Exposure {
         mode: ExposureArg,
         /// Manual only: shutter time in 100 us units, 1-2500 (330 is one frame at 30 fps); the

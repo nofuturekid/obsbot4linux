@@ -242,6 +242,38 @@ pub struct Identity {
     pub model_info: Option<ModelInfo>,
 }
 
+/// The microphone volume from the answer to 0x80c2 (i16, 0..100); anything else is no volume.
+fn decode_volume(d: &[u8]) -> Option<u8> {
+    let v = i16::from_le_bytes(d.get(..2)?.try_into().ok()?);
+    u8::try_from(v).ok().filter(|v| *v <= 100)
+}
+
+/// The steps of `exposure manual`, in the one order that is safe: range-check every value first
+/// (so a bad one changes nothing), switch to manual exposure, and only then set the values. The
+/// camera's shutter time written while the exposure is automatic freezes the automatic exposure
+/// (image stays dark), so the values must never come before the switch.
+fn manual_exposure(
+    time: Option<i32>,
+    gain: Option<i32>,
+    mut check: impl FnMut(&str, i32) -> Result<()>,
+    mut switch_to_manual: impl FnMut() -> Result<()>,
+    mut set: impl FnMut(&str, i32) -> Result<()>,
+) -> Result<()> {
+    let values = [("exposure_time", time), ("gain", gain)];
+    for (name, value) in values {
+        if let Some(v) = value {
+            check(name, v)?;
+        }
+    }
+    switch_to_manual()?;
+    for (name, value) in values {
+        if let Some(v) = value {
+            set(name, v)?;
+        }
+    }
+    Ok(())
+}
+
 /// One sequence for the whole process, so frames from separate `Camera` handles (the daemon
 /// opens the device per operation) never repeat a number.
 fn sequence() -> &'static Sequence {
@@ -335,16 +367,7 @@ impl Camera {
 
     /// Query 0x80c2: the microphone volume (i16, 0..100).
     pub fn audio_volume(&self) -> Result<u8> {
-        let d = self.query_to(0x02, 0x80c2)?;
-        let v = i16::from_le_bytes(
-            d.get(..2)
-                .and_then(|s| s.try_into().ok())
-                .ok_or(Error::NoAnswer(0x80c2))?,
-        );
-        u8::try_from(v)
-            .ok()
-            .filter(|v| *v <= 100)
-            .ok_or(Error::NoAnswer(0x80c2))
+        decode_volume(&self.query_to(0x02, 0x80c2)?).ok_or(Error::NoAnswer(0x80c2))
     }
 
     /// Query 0x3642: autofocus mode, manual position and focus window.
@@ -767,22 +790,15 @@ impl Camera {
     /// With `time` and `gain` they are set right after, only once both are in range. The camera's
     /// own frames 0x2442 / 0x2982 do the same (checked by reading the mode and shutter back with
     /// 0x2942 and by the image brightness) but leave these UVC values stale, so the UVC way is
-    /// the one that keeps `status.image` true. Never set the time while the exposure is
-    /// automatic: it freezes the automatic exposure.
+    /// the one that keeps `status.image` true.
     pub fn set_manual_exposure(&self, time: Option<i32>, gain: Option<i32>) -> Result<()> {
-        let values = [("exposure_time", time), ("gain", gain)];
-        for (name, value) in values {
-            if let Some(v) = value {
-                self.image_id_in_range(name, v)?;
-            }
-        }
-        self.dev.set_ctrl(EXPOSURE_AUTO, 1)?;
-        for (name, value) in values {
-            if let Some(v) = value {
-                self.set_image(name, v)?;
-            }
-        }
-        Ok(())
+        manual_exposure(
+            time,
+            gain,
+            |name, v| self.image_id_in_range(name, v).map(|_| ()),
+            || self.dev.set_ctrl(EXPOSURE_AUTO, 1),
+            |name, v| self.set_image(name, v),
+        )
     }
 
     pub fn factory_reset(&self) -> Result<()> {
@@ -841,8 +857,14 @@ impl Camera {
     }
 
     pub fn set_image(&self, name: &str, value: i32) -> Result<()> {
-        self.dev
-            .set_ctrl(self.image_id_in_range(name, value)?, value)
+        let id = self.image_id_in_range(name, value)?;
+        // a shutter time sent while the exposure is automatic freezes the automatic exposure
+        if name == "exposure_time" && self.dev.get_ctrl(EXPOSURE_AUTO)? != 1 {
+            return Err(Error::Invalid(
+                "exposure_time needs manual exposure: use `exposure manual --time <v>`".into(),
+            ));
+        }
+        self.dev.set_ctrl(id, value)
     }
 
     // --- presets ---
@@ -1086,5 +1108,63 @@ mod live_pose_tests {
     #[test]
     fn a_short_answer_is_no_pose() {
         assert!(LivePose::decode(&[0u8; 11]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod picture_and_sound_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn rec<T>(log: &RefCell<Vec<T>>, entry: T) -> Result<()> {
+        log.borrow_mut().push(entry);
+        Ok(())
+    }
+
+    #[test]
+    fn volume_answer_must_be_0_to_100() {
+        assert_eq!(decode_volume(&[0x0a, 0x00]), Some(10));
+        assert_eq!(decode_volume(&[0x64, 0x00]), Some(100));
+        assert_eq!(decode_volume(&[0x65, 0x00]), None, "101");
+        assert_eq!(decode_volume(&[0xff, 0xff]), None, "-1");
+        assert_eq!(decode_volume(&[0x0a, 0x01]), None, "266, not the low byte");
+        assert_eq!(decode_volume(&[0x0a]), None, "short");
+    }
+
+    #[test]
+    fn exposure_values_come_after_the_switch_to_manual() {
+        let log = RefCell::new(Vec::new());
+        manual_exposure(
+            Some(100),
+            Some(7),
+            |n, v| rec(&log, format!("check {n} {v}")),
+            || rec(&log, "manual".into()),
+            |n, v| rec(&log, format!("set {n} {v}")),
+        )
+        .unwrap();
+        assert_eq!(
+            *log.borrow(),
+            [
+                "check exposure_time 100",
+                "check gain 7",
+                "manual",
+                "set exposure_time 100",
+                "set gain 7"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_value_changes_nothing() {
+        let log = RefCell::new(Vec::new());
+        let r = manual_exposure(
+            Some(9999),
+            None,
+            |_, _| Err(Error::Invalid("out of range".into())),
+            || rec(&log, "manual"),
+            |_, _| rec(&log, "set"),
+        );
+        assert!(r.is_err());
+        assert!(log.borrow().is_empty(), "no switch, no value");
     }
 }

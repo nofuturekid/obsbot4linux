@@ -170,8 +170,9 @@ pub fn firmware_version(d: &[u8]) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Focus {
     pub mode: AutofocusMode,
-    /// Manual focus position 0-100; kept while another mode is active.
-    pub position: u8,
+    /// Manual focus position 0-100, kept while another mode is active; null when the camera
+    /// reported something else.
+    pub position: Option<u8>,
     /// Centre of the focus window, 0..1 from the top left; 0.5 / 0.5 unless `focus point` moved it.
     pub point: [f32; 2],
 }
@@ -183,7 +184,7 @@ impl Focus {
         let f = |i| word(i).map(f32::from_le_bytes).filter(|v| v.is_finite());
         Some(Self {
             mode: AutofocusMode::from_u8(u8::try_from(u(0)?).ok()?)?,
-            position: u8::try_from(u(1)?).ok().filter(|p| *p <= 100)?,
+            position: u8::try_from(u(1)?).ok().filter(|p| *p <= 100),
             point: [f(2)?, f(3)?],
         })
     }
@@ -341,13 +342,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             (f.mode, f.position, f.point),
-            (AutofocusMode::Continuous, 0, [0.5, 0.5])
+            (AutofocusMode::Continuous, Some(0), [0.5, 0.5])
         );
         let f = Focus::decode(&hex(
             "03000000320000000000003f0000003f0000000000000000640000000000000001000000",
         ))
         .unwrap();
-        assert_eq!((f.mode, f.position), (AutofocusMode::Manual, 50));
+        assert_eq!((f.mode, f.position), (AutofocusMode::Manual, Some(50)));
         let f = Focus::decode(&hex(
             "02000000000000009a99993ecdcccc3e0100000000000000640000000000000001000000",
         ))
@@ -367,7 +368,13 @@ mod tests {
         assert_eq!(Focus::decode(&d), None, "unknown mode");
         d[0] = 3;
         d[4] = 101;
-        assert_eq!(Focus::decode(&d), None, "position above 100");
+        // one odd field must not hide the rest
+        let f = Focus::decode(&d).unwrap();
+        assert_eq!((f.mode, f.position), (AutofocusMode::Manual, None));
+        assert_eq!(
+            serde_json::to_value(&f).unwrap()["position"],
+            serde_json::Value::Null
+        );
         d[4] = 50;
         d[8..12].copy_from_slice(&f32::NAN.to_le_bytes());
         assert_eq!(Focus::decode(&d), None, "NaN point");
